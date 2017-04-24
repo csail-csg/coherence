@@ -28,8 +28,8 @@ import Vector::*;
 // L1 connect to LL
 
 // 32KB L1
-typedef 8 L1DNum;
-typedef 0 L1INum;
+typedef 6 L1DNum;
+typedef 2 L1INum;
 typedef TAdd#(L1DNum, L1INum) L1Num;
 
 typedef 4 L1WayNum;

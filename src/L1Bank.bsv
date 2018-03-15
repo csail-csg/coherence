@@ -248,6 +248,8 @@ module mkL1Bank#(
             repTag: ?,
             waitP: True // we have req parent at the same time
         });
+        // inform processor of line eviction
+        procResp.evict(getLineAddr(resp.addr));
         $display("%t L1 %m sendRsToP: ", $time, 
             fshow(rsToPIndexQ.first)," ; ", 
             fshow(req), " ; ", 
@@ -268,6 +270,8 @@ module mkL1Bank#(
         };
         rsToPQ.enq(resp);
         pRqMshr.sendRsToP_pRq.releaseEntry(n); // mshr entry released
+        // inform processor of line eviction
+        procResp.evict(getLineAddr(resp.addr));
         $display("%t L1 %m sendRsToP: ", $time, 
             fshow(rsToPIndexQ.first), " ; ", 
             fshow(req), " ; ", 

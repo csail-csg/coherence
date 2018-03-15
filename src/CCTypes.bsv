@@ -193,6 +193,7 @@ interface L1ProcResp#(type idT);
     method Action respLd(idT id, Data resp);
     method Action respLrScAmo(idT id, Data resp);
     method ActionValue#(Tuple2#(LineByteEn, Line)) respSt(idT id);
+    method Action evict(LineAddr a); // called when cache line is evicted
 endinterface
 
 // RISCV-specific store-cond return values

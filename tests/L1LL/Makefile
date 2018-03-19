@@ -30,6 +30,8 @@ MACROS = -D CCSIZES_FILE=\"L1LLSizes.bsv\" -D DEBUG_DMA -D DEBUG_ICACHE \
 		 -D NO_REQ_STALL -D NO_DMA_REQ_STALL \
 		 -D BSIM
 
+LINK_JOBS ?= 8
+
 $(TARGETS): %:
 	mkdir -p build$@Dir
 	bsc -u -sim \
@@ -51,6 +53,7 @@ $(TARGETS): %:
 		-simdir build$@Dir \
 		+RTS -K500M -RTS \
 		-Xc -std=c99 \
+		-parallel-sim-link $(LINK_JOBS) \
 		-o sim$@ build$@Dir/*.ba $(CFILES)
 
 

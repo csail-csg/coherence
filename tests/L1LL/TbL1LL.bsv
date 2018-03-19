@@ -281,6 +281,9 @@ module mkTbL1LL(Empty);
                 let req = validValue(dcReqTable[i].sub(truncate(id)));
                 return tuple2(req.lineBE, req.line);
             endmethod
+            method Action evict(LineAddr a);
+                noAction;
+            endmethod
         endinterface);
     endfunction
     let memSys <- mkL1LL(map(getL1ProcResp, genVector));

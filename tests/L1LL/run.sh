@@ -21,10 +21,10 @@
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-make
-if [ $? -ne 0 ]; then
-    exit $?
-fi
+#make
+#if [ $? -ne 0 ]; then
+#    exit $?
+#fi
 
 ./simL1LL > log
 grep "L1 .* tagMatch" log > L1TagMatch.log

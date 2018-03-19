@@ -173,9 +173,9 @@ module mkL1CRqMshrSafe#(
     Bits#(reqT, _reqSz)
 );
     // EHR ports
-    Integer cRqTransfer_port = 0;
-    Integer sendRsToP_cRq_port = 1;
-    Integer pipelineResp_port = 2;
+    Integer sendRsToP_cRq_port = 0;
+    Integer pipelineResp_port = 1;
+    Integer cRqTransfer_port = 2;
     Integer sendRqToP_port = 0; // sendRqToP is read only
 
     // MSHR entry state

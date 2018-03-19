@@ -781,10 +781,14 @@ endmodule
 // and all writes are cononicalized
 
 // safe version: use EHR ports
-// cRqTransfer/sendRqToP/pRqTransfer: port 0
-// sendRsToP_cRq/sendRsToP_pRq: port 1
-// pipelineResp: port 2
+// sendRsToP_cRq/sendRsToP_pRq: port 0
+// pipelineResp: port 1
+// cRqTransfer/sendRqToP/pRqTransfer: port 2
 
+// We put cRqTransfer at last because it is ordered after the issue method of
+// LSQ outside cache, while pipelineResp and sendRsToP will call other methods
+// of LSQ. Making cRqTransfer after pipelineResp/sendRsToP will not add any
+// extra ordering constraint to methods of LSQ.
 
 
 // group banks into cache

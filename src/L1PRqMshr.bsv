@@ -89,9 +89,9 @@ module mkL1PRqMshrSafe(
     Alias#(pRqIndexT, Bit#(TLog#(pRqNum)))
 );
     // EHR port
-    Integer pRqTransfer_port = 0;
-    Integer sendRsToP_pRq_port = 1;
-    Integer pipelineResp_port = 2;
+    Integer sendRsToP_pRq_port = 0;
+    Integer pipelineResp_port = 1;
+    Integer pRqTransfer_port = 2;
 
     // MSHR entry state
     Vector#(pRqNum, Ehr#(3, L1PRqState)) stateVec <- replicateM(mkEhr(Empty));

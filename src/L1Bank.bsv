@@ -225,10 +225,10 @@ module mkL1Bank#(
     rule sendRsToP_cRq(rsToPIndexQ.first matches tagged CRq .n);
         rsToPIndexQ.deq;
         // get cRq replacement info
-        procRqT req <- cRqMshr.sendRsToP_cRq.getRq(n);
-        cRqSlotT slot <- cRqMshr.sendRsToP_cRq.getSlot(n);
-        Maybe#(Line) data <- cRqMshr.sendRsToP_cRq.getData(n);
-        L1CRqState state <- cRqMshr.sendRsToP_cRq.getState(n);
+        procRqT req = cRqMshr.sendRsToP_cRq.getRq(n);
+        cRqSlotT slot = cRqMshr.sendRsToP_cRq.getSlot(n);
+        Maybe#(Line) data = cRqMshr.sendRsToP_cRq.getData(n);
+        L1CRqState state = cRqMshr.sendRsToP_cRq.getState(n);
         doAssert(state == WaitNewTag, 
             "send replacement resp to parent, state should be WaitNewTag" 
         );
@@ -260,8 +260,8 @@ module mkL1Bank#(
     rule sendRsToP_pRq(rsToPIndexQ.first matches tagged PRq .n);
         rsToPIndexQ.deq;
         // get pRq info & send resp & release MSHR entry
-        pRqFromPT req <- pRqMshr.sendRsToP_pRq.getRq(n);
-        Maybe#(Line) data <- pRqMshr.sendRsToP_pRq.getData(n);
+        pRqFromPT req = pRqMshr.sendRsToP_pRq.getRq(n);
+        Maybe#(Line) data = pRqMshr.sendRsToP_pRq.getData(n);
         cRsToPT resp = CRsMsg {
             addr: req.addr,
             toState: req.toState,
@@ -282,8 +282,8 @@ module mkL1Bank#(
     rule sendRqToP;
         rqToPIndexQ.deq;
         cRqIdxT n = rqToPIndexQ.first;
-        procRqT req <- cRqMshr.sendRqToP.getRq(n);
-        cRqSlotT slot <- cRqMshr.sendRqToP.getSlot(n);
+        procRqT req = cRqMshr.sendRqToP.getRq(n);
+        cRqSlotT slot = cRqMshr.sendRqToP.getSlot(n);
         cRqToPT cRqToP = CRqMsg {
             addr: req.addr,
             fromState: slot.cs,
@@ -311,6 +311,13 @@ module mkL1Bank#(
     // pipeline outputs
     pipeOutT pipeOut = pipeline.first;
     ramDataT ram = pipeOut.ram;
+    // figure out procRq MSHR idx in pipeline output (since there is only one
+    // port to select from MSHR)
+    cRqIdxT pipeOutCRqIdx = (case(pipeOut.cmd) matches
+        tagged L1CRq .n: (n);
+        default: (fromMaybe(0, ram.info.owner)); // L1PRs and L1PRq
+    endcase);
+    procRqT pipeOutCRq = cRqMshr.pipelineResp.getRq(pipeOutCRqIdx);
 
     // function to process cRq hit (MSHR slot may have garbage)
     function Action cRqHit(cRqIdxT n, procRqT req);
@@ -373,7 +380,7 @@ module mkL1Bank#(
             end
         endcase
         // deq pipeline or swap in successor
-        Maybe#(cRqIdxT) succ <- cRqMshr.pipelineResp.getSucc(n);
+        Maybe#(cRqIdxT) succ = cRqMshr.pipelineResp.getSucc(n);
         pipeline.deqWrite(succ, RamData {
             info: CacheInfo {
                 tag: getTag(req.addr), // should be the same as original tag
@@ -392,19 +399,23 @@ module mkL1Bank#(
     endaction
     endfunction
 
+    //rule pipelineResp_cRq_debug(pipeOut.cmd matches tagged L1CRq .n);
+    //    $display("%t L1 %m pipelineResp debug: ", $time, fshow(pipeOut));
+    //endrule
+
     rule pipelineResp_cRq(pipeOut.cmd matches tagged L1CRq .n);
         $display("%t L1 %m pipelineResp: ", $time, fshow(pipeOut));
 
-        procRqT procRq <- cRqMshr.pipelineResp.getRq(n);
+        procRqT procRq = pipeOutCRq;
         $display("%t L1 %m pipelineResp: cRq: ", $time, fshow(n), " ; ", fshow(procRq));
         
         // find end of dependency chain
-        Maybe#(cRqIdxT) cRqEOC <- cRqMshr.pipelineResp.searchEndOfChain(procRq.addr);
+        Maybe#(cRqIdxT) cRqEOC = cRqMshr.pipelineResp.searchEndOfChain(procRq.addr);
 
         // function to process cRq miss without replacement (MSHR slot may have garbage)
         function Action cRqMissNoReplacement;
         action
-            cRqSlotT cSlot <- cRqMshr.pipelineResp.getSlot(n);
+            cRqSlotT cSlot = cRqMshr.pipelineResp.getSlot(n);
             // it is impossible in L1 to have slot.waitP == True in this function
             // because cRq is not set to Depend when pRq invalidates it (pRq just directly resp)
             // and this func is only called when cs < toState (otherwise will hit)
@@ -545,7 +556,7 @@ module mkL1Bank#(
         $display("%t L1 %m pipelineResp: pRs: ", $time);
 
         if(ram.info.owner matches tagged Valid .cOwner) begin
-            procRqT procRq <- cRqMshr.pipelineResp.getRq(cOwner);
+            procRqT procRq = pipeOutCRq;
             doAssert(ram.info.cs >= procRq.toState && ram.info.tag == getTag(procRq.addr),
                 ("pRs must be a hit")
             );
@@ -561,7 +572,7 @@ module mkL1Bank#(
     endrule
 
     rule pipelineResp_pRq(pipeOut.cmd matches tagged L1PRq .n);
-        pRqFromPT pRq <- pRqMshr.pipelineResp.getRq(n);
+        pRqFromPT pRq = pRqMshr.pipelineResp.getRq(n);
         $display("%t L1 %m pipelineResp: pRq: ", $time, fshow(n), " ; ", fshow(pRq));
 
         // pRq is never in dependency chain, so it is never swapped in
@@ -583,10 +594,10 @@ module mkL1Bank#(
         end
         else if(ram.info.owner matches tagged Valid .cOwner) begin
             // XXX keep this getRq method call, this is involved in checking unsafe cRq MSHR
-            procRqT cRq <- cRqMshr.pipelineResp.getRq(cOwner);
+            procRqT cRq = pipeOutCRq;
             // must be the case the pRq overtakes cRq
-            L1CRqState cState <- cRqMshr.pipelineResp.getState(cOwner);
-            cRqSlotT cSlot <- cRqMshr.pipelineResp.getSlot(cOwner);
+            L1CRqState cState = cRqMshr.pipelineResp.getState(cOwner);
+            cRqSlotT cSlot = cRqMshr.pipelineResp.getSlot(cOwner);
             $display("%t L1 %m pipelineResp: pRq: overtake cRq: ", $time,
                 fshow(cOwner), " ; ",
                 fshow(cRq), " ; ",
@@ -831,35 +842,49 @@ module mkL1Cache#(
         mkL1Bank(mkL1CRqMshrLocal, mkL1PRqMshrLocal, mkL1Pipeline, procResp)
     );
 
-    Fifo#(2, cRqToPT) cRqToPQ <- mkCFFifo;
-    Fifo#(2, cRsToPT) cRsToPQ <- mkCFFifo;
-    Fifo#(2, pRqRsFromPT) pRqRsFromPQ <- mkCFFifo;
-
-    function XBarDstInfo#(Bit#(0), cRqToPT) getCRqDstInfo(bankIdT bid, cRqToPT cRq);
-        return XBarDstInfo {idx: 0, data: cRq};
-    endfunction
-    function Get#(cRqToPT) cRqGet(l1BankT ifc) = toGet(ifc.to_parent.rqToP);
-    mkXBar(getCRqDstInfo, map(cRqGet, banks), vec(toPut(cRqToPQ)));
-
-    function XBarDstInfo#(Bit#(0), cRsToPT) getCRsDstInfo(bankdIdT bid, cRsToPT cRs);
-        return XBarDstInfo {idx: 0, data: cRs};
-    endfunction
-    function Get#(cRsToPT) cRsGet(l1BankT ifc) = toGet(ifc.to_parent.rsToP);
-    mkXBar(getCRsDstInfo, map(cRsGet, banks), vec(toPut(cRsToPQ)));
-
     function bankIdT getBankId(Addr a);
         return truncate(a >> valueof(LgLineSzBytes));
     endfunction
 
-    for(Integer i = 0; i < valueof(bankNum); i = i+1) begin
-        rule sendPRq(pRqRsFromPQ.first matches tagged PRq .rq &&& getBankId(rq.addr) == fromInteger(i));
-            let r <- toGet(pRqRsFromPQ).get;
-            banks[i].to_parent.fromP.enq(r);
-        endrule
-        rule sendPRs(pRqRsFromPQ.first matches tagged PRs .rs &&& getBankId(rs.addr) == fromInteger(i));
-            let r <- toGet(pRqRsFromPQ).get;
-            banks[i].to_parent.fromP.enq(r);
-        endrule
+    ChildCacheToParent#(wayT, void) toParentIfc; // ifc to parent cache
+
+    if(valueof(bankNum) == 1) begin
+        toParentIfc = banks[0].to_parent;
+    end
+    else begin
+        // multiple banks need cross bar
+        Fifo#(2, cRqToPT) cRqToPQ <- mkCFFifo;
+        Fifo#(2, cRsToPT) cRsToPQ <- mkCFFifo;
+        Fifo#(2, pRqRsFromPT) pRqRsFromPQ <- mkCFFifo;
+
+        function XBarDstInfo#(Bit#(0), cRqToPT) getCRqDstInfo(bankIdT bid, cRqToPT cRq);
+            return XBarDstInfo {idx: 0, data: cRq};
+        endfunction
+        function Get#(cRqToPT) cRqGet(l1BankT ifc) = toGet(ifc.to_parent.rqToP);
+        mkXBar(getCRqDstInfo, map(cRqGet, banks), vec(toPut(cRqToPQ)));
+
+        function XBarDstInfo#(Bit#(0), cRsToPT) getCRsDstInfo(bankdIdT bid, cRsToPT cRs);
+            return XBarDstInfo {idx: 0, data: cRs};
+        endfunction
+        function Get#(cRsToPT) cRsGet(l1BankT ifc) = toGet(ifc.to_parent.rsToP);
+        mkXBar(getCRsDstInfo, map(cRsGet, banks), vec(toPut(cRsToPQ)));
+
+        for(Integer i = 0; i < valueof(bankNum); i = i+1) begin
+            rule sendPRq(pRqRsFromPQ.first matches tagged PRq .rq &&& getBankId(rq.addr) == fromInteger(i));
+                let r <- toGet(pRqRsFromPQ).get;
+                banks[i].to_parent.fromP.enq(r);
+            endrule
+            rule sendPRs(pRqRsFromPQ.first matches tagged PRs .rs &&& getBankId(rs.addr) == fromInteger(i));
+                let r <- toGet(pRqRsFromPQ).get;
+                banks[i].to_parent.fromP.enq(r);
+            endrule
+        end
+
+        toParentIfc = (interface ChildCacheToParent;
+            interface rqToP = toFifoDeq(cRqToPQ);
+            interface rsToP = toFifoDeq(cRsToPQ);
+            interface fromP = toFifoEnq(pRqRsFromPQ);
+        endinterface);
     end
 
 `ifdef CHECK_DEADLOCK
@@ -884,11 +909,7 @@ module mkL1Cache#(
     interface pRqStuck = nullGet;
 `endif
 
-    interface ChildCacheToParent to_parent;
-        interface rqToP = toFifoDeq(cRqToPQ);
-        interface rsToP = toFifoDeq(cRsToPQ);
-        interface fromP = toFifoEnq(pRqRsFromPQ);
-    endinterface
+    interface ChildCacheToParent to_parent = toParentIfc;
 
     interface L1ProcReq procReq;
         method Action req(procRqT r);

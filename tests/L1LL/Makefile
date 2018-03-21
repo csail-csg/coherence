@@ -53,6 +53,7 @@ $(TARGETS): %:
 		-simdir build$@Dir \
 		+RTS -K500M -RTS \
 		-Xc -std=c99 \
+		-Xc++ -D_GLIBCXX_USE_CXX11_ABI=0 \
 		-parallel-sim-link $(LINK_JOBS) \
 		-o sim$@ build$@Dir/*.ba $(CFILES)
 

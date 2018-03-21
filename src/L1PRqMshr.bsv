@@ -89,6 +89,7 @@ module mkL1PRqMshrSafe(
     Alias#(pRqIndexT, Bit#(TLog#(pRqNum)))
 );
     // EHR port
+    // We put pipelineResp < transfer to cater for deq < enq of cache pipeline
     Integer sendRsToP_pRq_port = 0;
     Integer pipelineResp_port = 1;
     Integer pRqTransfer_port = 2;

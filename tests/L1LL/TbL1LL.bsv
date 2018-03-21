@@ -54,7 +54,7 @@ typedef Bit#(TLog#(TAdd#(TestNum, 1))) TestCnt;
 typedef TDiv#(TestNum, 10) TestPrintNum;
 
 // number of DMA reqs
-typedef 1 DmaTestNum; //TMul#(TestNum, L1Num) DmaTestNum; // To reduce sc failure
+typedef 100 DmaTestNum; //TMul#(TestNum, L1Num) DmaTestNum; // To reduce sc failure
 typedef Bit#(TLog#(DmaTestNum)) DmaTestId;
 typedef Bit#(TLog#(TAdd#(DmaTestNum, 1))) DmaTestCnt;
 typedef TDiv#(DmaTestNum, 10) DmaTestPrintNum;

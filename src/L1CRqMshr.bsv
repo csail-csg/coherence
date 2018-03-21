@@ -173,10 +173,11 @@ module mkL1CRqMshrSafe#(
     Bits#(reqT, _reqSz)
 );
     // EHR ports
+    // We put pipelineResp < transfer to cater for deq < enq of cache pipeline
+    Integer sendRqToP_port = 0; // sendRqToP is read only
     Integer sendRsToP_cRq_port = 0;
     Integer pipelineResp_port = 1;
     Integer cRqTransfer_port = 2;
-    Integer sendRqToP_port = 0; // sendRqToP is read only
 
     // MSHR entry state
     Vector#(cRqNum, Ehr#(3, L1CRqState)) stateVec <- replicateM(mkEhr(Empty));

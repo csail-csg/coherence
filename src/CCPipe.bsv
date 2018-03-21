@@ -61,13 +61,6 @@ interface CCPipe#(
     method Action deqWrite(Maybe#(pipeCmdT) newCmd, RamData#(tagT, msiT, dirT, ownerT, lineT) wrRam);
 endinterface
 
-// input data type (temporarily buffered in bypass FIFO)
-typedef struct {
-    pipeCmdT cmd;
-    Maybe#(lineT) respLine;
-    RespState#(msiT) toState;
-} InputData#(type msiT, type lineT, type pipeCmdT) deriving(Bits, Eq);
-
 // internal pipeline reg types
 // three stages
 // 1: enq
@@ -132,7 +125,6 @@ module mkCCPipe#(
     Alias#(ramDataT, RamData#(tagT, msiT, dirT, ownerT, lineT)),
     Alias#(respStateT, RespState#(msiT)),
     Alias#(pipeOutT, PipeOut#(wayT, tagT, msiT, dirT, ownerT, lineT, pipeCmdT)),
-    Alias#(inputDataT, InputData#(msiT, lineT, pipeCmdT)),
     Alias#(enq2MatchT, Enq2Match#(wayNum, tagT, msiT, dirT, ownerT, lineT, pipeCmdT)),
     Alias#(match2OutT, Match2Out#(wayT, tagT, msiT, dirT, ownerT, lineT, pipeCmdT)),
     Alias#(bypassInfoT, BypassInfo#(wayT, indexT, tagT, msiT, dirT, lineT, ownerT)),
@@ -145,9 +137,6 @@ module mkCCPipe#(
     Bits#(pipeCmdT, _pipeCmdSz),
     Eq#(indexT)
 );
-
-    // input bypass fifo: make enq & deq conflict free
-    Fifo#(1, inputDataT) inputQ <- mkBypassFifo;
 
     // pipeline regs
 
@@ -166,40 +155,12 @@ module mkCCPipe#(
     Reg#(Maybe#(match2OutT)) mat2Out_match = mat2Out[1];
 
     // bypass write to ram
-    Ehr#(2, Maybe#(bypassInfoT)) bypass <- mkEhr(Invalid);
-
-    // reset bypass
-    (* fire_when_enabled, no_implicit_conditions *)
-    rule resetBypass;
-        bypass[1] <= Invalid;
-    endrule
-
-    // stage 1: enq req to pipeline: access info RAM & bypass
-    rule doEnq(!isValid(enq2Mat_enq) && initDone);
-        inputQ.deq;
-        inputDataT in = inputQ.first;
-        // read ram
-        indexT index = getIndex(in.cmd);
-        for(Integer i = 0; i < valueOf(wayNum); i = i+1) begin
-            infoRam[i].rdReq(index);
-        end
-        // write reg & get bypass
-        enq2MatchT e2m = Enq2Match {
-            cmd: in.cmd,
-            infoVec: replicate(Invalid),
-            respLine: in.respLine,
-            toState: in.toState
-        };
-        if(bypass[1] matches tagged Valid .b &&& b.index == index) begin
-            e2m.infoVec[b.way] = Valid (b.ram.info);
-        end
-        enq2Mat_enq <= Valid (e2m);
-    endrule
+    RWire#(bypassInfoT) bypass <- mkRWire;
 
     // stage 2: first get bypass
     (* fire_when_enabled, no_implicit_conditions *)
-    rule doMatch_bypass(isValid(bypass[1]) && isValid(enq2Mat_bypass) && initDone);
-        bypassInfoT b = fromMaybe(?, bypass[1]);
+    rule doMatch_bypass(isValid(bypass.wget) && isValid(enq2Mat_bypass) && initDone);
+        bypassInfoT b = fromMaybe(?, bypass.wget);
         enq2MatchT e2m = fromMaybe(?, enq2Mat_bypass);
         if(b.index == getIndex(e2m.cmd)) begin
             e2m.infoVec[b.way] = Valid (b.ram.info);
@@ -247,7 +208,7 @@ module mkCCPipe#(
             checkDownCRsDataValid(m2o.cmd, m2o.info.dir, isValid(e2m.respLine)); // sanity check on data
             m2o.info.dir <- updateChildDir(m2o.cmd, s, m2o.info.dir);
         end
-        if(bypass[1] matches tagged Valid .b &&& b.index == index &&& b.way == way &&& !isValid(m2o.line)) begin
+        if(bypass.wget matches tagged Valid .b &&& b.index == index &&& b.way == way &&& !isValid(m2o.line)) begin
             // bypass has lower priority than resp data
             m2o.line = Valid (b.ram.line);
         end
@@ -270,17 +231,33 @@ module mkCCPipe#(
         };
     endfunction
 
-    method Action enq(pipeCmdT cmd, Maybe#(lineT) respLine, respStateT toState);
-        inputQ.enq(InputData {
+    Bool enq_guard = !isValid(enq2Mat_enq) && initDone;
+
+    Bool deq_guard = isValid(mat2Out_out) && initDone;
+
+    // stage 1: enq req to pipeline: access info RAM & bypass
+    method Action enq(pipeCmdT cmd, Maybe#(lineT) respLine, respStateT toState) if(enq_guard);
+        // read ram
+        indexT index = getIndex(cmd);
+        for(Integer i = 0; i < valueOf(wayNum); i = i+1) begin
+            infoRam[i].rdReq(index);
+        end
+        // write reg & get bypass
+        enq2MatchT e2m = Enq2Match {
             cmd: cmd,
+            infoVec: replicate(Invalid),
             respLine: respLine,
             toState: toState
-        });
+        };
+        if(bypass.wget matches tagged Valid .b &&& b.index == index) begin
+            e2m.infoVec[b.way] = Valid (b.ram.info);
+        end
+        enq2Mat_enq <= Valid (e2m);
     endmethod
 
-    method Bool notFull = inputQ.notFull;
+    method Bool notFull = enq_guard;
 
-    method pipeOutT first if(isValid(mat2Out_out) && initDone);
+    method pipeOutT first if(deq_guard);
         return firstOut;
     endmethod
 
@@ -288,9 +265,9 @@ module mkCCPipe#(
         return firstOut;
     endmethod
 
-    method Bool notEmpty = isValid(mat2Out_out) && initDone;
+    method Bool notEmpty = deq_guard;
 
-    method Action deqWrite(Maybe#(pipeCmdT) newCmd, ramDataT wrRam) if(isValid(mat2Out_out) && initDone);
+    method Action deqWrite(Maybe#(pipeCmdT) newCmd, ramDataT wrRam) if(deq_guard);
         match2OutT m2o = fromMaybe(?, mat2Out_out);
         wayT way = m2o.way;
         indexT index = getIndex(m2o.cmd);
@@ -298,7 +275,7 @@ module mkCCPipe#(
         infoRam[way].wrReq(index, wrRam.info);
         dataRam[way].wrReq(index, wrRam.line);
         // set bypass to Enq and Match stages
-        bypass[0] <= Valid (BypassInfo {
+        bypass.wset(BypassInfo {
             index: index,
             way: way,
             ram: wrRam

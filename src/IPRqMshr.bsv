@@ -52,12 +52,12 @@ typedef struct {
 } IPRqMshrStuck deriving(Bits, Eq, FShow);
 
 interface IPRqMshr_sendRsToP_pRq#(numeric type pRqNum);
-    method ActionValue#(PRqMsg#(void)) getRq(Bit#(TLog#(pRqNum)) n);
+    method PRqMsg#(void) getRq(Bit#(TLog#(pRqNum)) n);
     method Action releaseEntry(Bit#(TLog#(pRqNum)) n);
 endinterface
 
 interface IPRqMshr_pipelineResp#(numeric type pRqNum);
-    method ActionValue#(PRqMsg#(void)) getRq(Bit#(TLog#(pRqNum)) n);
+    method PRqMsg#(void) getRq(Bit#(TLog#(pRqNum)) n);
     method Action releaseEntry(Bit#(TLog#(pRqNum)) n);
     method Action setDone(Bit#(TLog#(pRqNum)) n);
 endinterface
@@ -160,7 +160,7 @@ module mkIPRqMshrSafe(
     endmethod
 
     interface IPRqMshr_sendRsToP_pRq sendRsToP_pRq;
-        method ActionValue#(PRqMsg#(void)) getRq(pRqIndexT n);
+        method PRqMsg#(void) getRq(pRqIndexT n);
             return reqVec[n][sendRsToP_pRq_port];
         endmethod
 
@@ -171,7 +171,7 @@ module mkIPRqMshrSafe(
     endinterface
 
     interface IPRqMshr_pipelineResp pipelineResp;
-        method ActionValue#(PRqMsg#(void)) getRq(pRqIndexT n);
+        method PRqMsg#(void) getRq(pRqIndexT n);
             return reqVec[n][pipelineResp_port];
         endmethod
 

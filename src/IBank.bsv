@@ -232,8 +232,8 @@ module mkIBank#(
     rule sendRsToP_cRq(rsToPIndexQ.first matches tagged CRq .n);
         rsToPIndexQ.deq;
         // get cRq replacement info
-        procRqT req <- cRqMshr.sendRsToP_cRq.getRq(n);
-        cRqSlotT slot <- cRqMshr.sendRsToP_cRq.getSlot(n);
+        procRqT req = cRqMshr.sendRsToP_cRq.getRq(n);
+        cRqSlotT slot = cRqMshr.sendRsToP_cRq.getSlot(n);
         // send resp to parent
         cRsToPT resp = CRsMsg {
             addr: {slot.repTag, truncate(req.addr)}, // get bank id & index from req
@@ -256,7 +256,7 @@ module mkIBank#(
     rule sendRsToP_pRq(rsToPIndexQ.first matches tagged PRq .n);
         rsToPIndexQ.deq;
         // get pRq info & send resp & release MSHR entry
-        pRqFromPT req <- pRqMshr.sendRsToP_pRq.getRq(n);
+        pRqFromPT req = pRqMshr.sendRsToP_pRq.getRq(n);
         cRsToPT resp = CRsMsg {
             addr: req.addr,
             toState: I, // I$ must downgrade to I
@@ -276,8 +276,8 @@ module mkIBank#(
     rule sendRqToP;
         rqToPIndexQ.deq;
         cRqIdxT n = rqToPIndexQ.first;
-        procRqT req <- cRqMshr.sendRqToP.getRq(n);
-        cRqSlotT slot <- cRqMshr.sendRqToP.getSlot(n);
+        procRqT req = cRqMshr.sendRqToP.getRq(n);
+        cRqSlotT slot = cRqMshr.sendRqToP.getSlot(n);
         cRqToPT cRqToP = CRqMsg {
             addr: req.addr,
             fromState: I, // I$ upgrade from I
@@ -306,6 +306,13 @@ module mkIBank#(
     // pipeline outputs
     pipeOutT pipeOut = pipeline.first;
     ramDataT ram = pipeOut.ram;
+    // get proc req to select from cRqMshr
+    procRqT pipeOutCRq = cRqMshr.pipelineResp.getRq(
+        case(pipeOut.cmd) matches
+            tagged L1CRq .n: (n);
+            default: (fromMaybe(0, ram.info.owner)); // L1PRs
+        endcase
+    );
 
     // function to get superscaler inst read result
     function resultT readInst(Line line, Addr addr);
@@ -341,7 +348,7 @@ module mkIBank#(
             "cRqHit but tag or cs incorrect"
         );
         // deq pipeline or swap in successor
-        Maybe#(cRqIdxT) succ <- cRqMshr.pipelineResp.getSucc(n);
+        Maybe#(cRqIdxT) succ = cRqMshr.pipelineResp.getSucc(n);
         pipeline.deqWrite(succ, RamData {
             info: CacheInfo {
                 tag: getTag(req.addr), // should be the same as original tag
@@ -368,16 +375,16 @@ module mkIBank#(
     rule pipelineResp_cRq(pipeOut.cmd matches tagged L1CRq .n);
         $display("%t I %m pipelineResp: ", $time, fshow(pipeOut));
 
-        procRqT procRq <- cRqMshr.pipelineResp.getRq(n);
+        procRqT procRq = pipeOutCRq;
         $display("%t I %m pipelineResp: cRq: ", $time, fshow(n), " ; ", fshow(procRq));
         
         // find end of dependency chain
-        Maybe#(cRqIdxT) cRqEOC <- cRqMshr.pipelineResp.searchEndOfChain(procRq.addr);
+        Maybe#(cRqIdxT) cRqEOC = cRqMshr.pipelineResp.searchEndOfChain(procRq.addr);
 
         // function to process cRq miss without replacement (MSHR slot may have garbage)
         function Action cRqMissNoReplacement;
         action
-            cRqSlotT cSlot <- cRqMshr.pipelineResp.getSlot(n);
+            cRqSlotT cSlot = cRqMshr.pipelineResp.getSlot(n);
             // it is impossible in L1 to have slot.waitP == True in this function
             // because cRq is not set to Depend when pRq invalidates it (pRq just directly resp)
             // and this func is only called when cs < S (otherwise will hit)
@@ -497,7 +504,7 @@ module mkIBank#(
         $display("%t I %m pipelineResp: pRs: ", $time);
 
         if(ram.info.owner matches tagged Valid .cOwner) begin
-            procRqT procRq <- cRqMshr.pipelineResp.getRq(cOwner);
+            procRqT procRq = pipeOutCRq;
             doAssert(ram.info.cs == S && ram.info.tag == getTag(procRq.addr),
                 "pRs must be a hit"
             );
@@ -513,7 +520,7 @@ module mkIBank#(
     endrule
 
     rule pipelineResp_pRq(pipeOut.cmd matches tagged L1PRq .n);
-        pRqFromPT pRq <- pRqMshr.pipelineResp.getRq(n);
+        pRqFromPT pRq = pRqMshr.pipelineResp.getRq(n);
         $display("%t I %m pipelineResp: pRq: ", $time, fshow(n), " ; ", fshow(pRq));
 
         doAssert(pRq.toState == I, "I$ pRq only downgrade to I");

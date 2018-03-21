@@ -77,8 +77,8 @@ interface ICRqMshr_sendRsToP_cRq#(
     type tagT,
     type reqT
 );
-    method ActionValue#(reqT) getRq(Bit#(TLog#(cRqNum)) n);
-    method ActionValue#(ICRqSlot#(wayT, tagT)) getSlot(Bit#(TLog#(cRqNum)) n);
+    method reqT getRq(Bit#(TLog#(cRqNum)) n);
+    method ICRqSlot#(wayT, tagT) getSlot(Bit#(TLog#(cRqNum)) n);
 endinterface
 
 // port for sendRqToP
@@ -88,8 +88,8 @@ interface ICRqMshr_sendRqToP#(
     type tagT,
     type reqT
 );
-    method ActionValue#(reqT) getRq(Bit#(TLog#(cRqNum)) n);
-    method ActionValue#(ICRqSlot#(wayT, tagT)) getSlot(Bit#(TLog#(cRqNum)) n);
+    method reqT getRq(Bit#(TLog#(cRqNum)) n);
+    method ICRqSlot#(wayT, tagT) getSlot(Bit#(TLog#(cRqNum)) n);
 endinterface
 
 // port for pipelineResp
@@ -100,9 +100,9 @@ interface ICRqMshr_pipelineResp#(
     type reqT,
     type resultT
 );
-    method ActionValue#(ICRqState) getState(Bit#(TLog#(cRqNum)) n);
-    method ActionValue#(reqT) getRq(Bit#(TLog#(cRqNum)) n);
-    method ActionValue#(ICRqSlot#(wayT, tagT)) getSlot(Bit#(TLog#(cRqNum)) n);
+    method ICRqState getState(Bit#(TLog#(cRqNum)) n);
+    method reqT getRq(Bit#(TLog#(cRqNum)) n);
+    method ICRqSlot#(wayT, tagT) getSlot(Bit#(TLog#(cRqNum)) n);
 
     method Action setResult(Bit#(TLog#(cRqNum)) n, resultT r); // set a valid result
     method Action setStateSlot(
@@ -113,13 +113,13 @@ interface ICRqMshr_pipelineResp#(
     // can only change state to NON-Empty state
     // cannot be used to release MSHR entry (use releaseSlot instead)
 
-    method ActionValue#(Maybe#(Bit#(TLog#(cRqNum)))) getSucc(Bit#(TLog#(cRqNum)) n);
+    method Maybe#(Bit#(TLog#(cRqNum))) getSucc(Bit#(TLog#(cRqNum)) n);
     method Action setSucc(Bit#(TLog#(cRqNum)) n, Maybe#(Bit#(TLog#(cRqNum))) succ);
     // index in setSucc is usually different from other getXXX methods
 
     // find existing cRq which has gone through pipeline, but not in Done state, and has not successor
     // i.e. search the end of dependency chain
-    method ActionValue#(Maybe#(Bit#(TLog#(cRqNum)))) searchEndOfChain(Addr addr);
+    method Maybe#(Bit#(TLog#(cRqNum))) searchEndOfChain(Addr addr);
 endinterface
 
 interface ICRqMshr_sendRsToC#(
@@ -254,35 +254,35 @@ module mkICRqMshrSafe#(
     endinterface
 
     interface ICRqMshr_sendRsToP_cRq sendRsToP_cRq;
-        method ActionValue#(reqT) getRq(cRqIndexT n);
+        method reqT getRq(cRqIndexT n);
             return reqVec[n][sendRsToP_cRq_port];
         endmethod
 
-        method ActionValue#(slotT) getSlot(cRqIndexT n);
+        method slotT getSlot(cRqIndexT n);
             return slotVec[n][sendRsToP_cRq_port];
         endmethod
     endinterface
 
     interface ICRqMshr_sendRqToP sendRqToP;
-        method ActionValue#(reqT) getRq(cRqIndexT n);
+        method reqT getRq(cRqIndexT n);
             return reqVec[n][sendRqToP_port];
         endmethod
 
-        method ActionValue#(slotT) getSlot(cRqIndexT n);
+        method slotT getSlot(cRqIndexT n);
             return slotVec[n][sendRqToP_port];
         endmethod
     endinterface
 
     interface ICRqMshr_pipelineResp pipelineResp;
-        method ActionValue#(ICRqState) getState(cRqIndexT n);
+        method ICRqState getState(cRqIndexT n);
             return stateVec[n][pipelineResp_port];
         endmethod
 
-        method ActionValue#(reqT) getRq(cRqIndexT n);
+        method reqT getRq(cRqIndexT n);
             return reqVec[n][pipelineResp_port];
         endmethod
 
-        method ActionValue#(slotT) getSlot(cRqIndexT n);
+        method slotT getSlot(cRqIndexT n);
             return slotVec[n][pipelineResp_port];
         endmethod
 
@@ -296,7 +296,7 @@ module mkICRqMshrSafe#(
             resultVec[n][pipelineResp_port] <= Valid (r);
         endmethod
 
-        method ActionValue#(Maybe#(cRqIndexT)) getSucc(cRqIndexT n);
+        method Maybe#(cRqIndexT) getSucc(cRqIndexT n);
             return succValidVec[n][pipelineResp_port] ? (Valid (succFile.sub(n))) : Invalid;
         endmethod
 
@@ -305,7 +305,7 @@ module mkICRqMshrSafe#(
             succFile.upd(n, fromMaybe(?, succ));
         endmethod
 
-        method ActionValue#(Maybe#(cRqIndexT)) searchEndOfChain(Addr addr);
+        method Maybe#(cRqIndexT) searchEndOfChain(Addr addr);
             function Bool isEndOfChain(Integer i);
                 // check entry i is end of chain or not
                 ICRqState state = stateVec[i][pipelineResp_port];

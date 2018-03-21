@@ -82,8 +82,8 @@ interface LLCRqMshr_transfer#(
     type tagT,
     type reqT // child req type
 );
-    method ActionValue#(reqT) getRq(Bit#(TLog#(cRqNum)) n);
-    method ActionValue#(LLCRqSlot#(childNum, wayT, tagT)) getSlot(Bit#(TLog#(cRqNum)) n);
+    method reqT getRq(Bit#(TLog#(cRqNum)) n);
+    method LLCRqSlot#(childNum, wayT, tagT) getSlot(Bit#(TLog#(cRqNum)) n);
     method ActionValue#(Bit#(TLog#(cRqNum))) getEmptyEntryInit(reqT r, Maybe#(Line) d);
 endinterface
 
@@ -100,9 +100,9 @@ interface LLCRqMshr_sendToM#(
     type tagT,
     type reqT // child req type
 );
-    method ActionValue#(reqT) getRq(Bit#(TLog#(cRqNum)) n);
-    method ActionValue#(LLCRqSlot#(childNum, wayT, tagT)) getSlot(Bit#(TLog#(cRqNum)) n);
-    method ActionValue#(Maybe#(Line)) getData(Bit#(TLog#(cRqNum)) n);
+    method reqT getRq(Bit#(TLog#(cRqNum)) n);
+    method LLCRqSlot#(childNum, wayT, tagT) getSlot(Bit#(TLog#(cRqNum)) n);
+    method Maybe#(Line) getData(Bit#(TLog#(cRqNum)) n);
 endinterface
 
 // interface for sendRsToDma and sendRsToC
@@ -110,8 +110,8 @@ interface LLCRqMshr_sendRsToDmaC#(
     numeric type cRqNum,
     type reqT // child req type
 );
-    method ActionValue#(reqT) getRq(Bit#(TLog#(cRqNum)) n);
-    method ActionValue#(Maybe#(Line)) getData(Bit#(TLog#(cRqNum)) n);
+    method reqT getRq(Bit#(TLog#(cRqNum)) n);
+    method Maybe#(Line) getData(Bit#(TLog#(cRqNum)) n);
     method Action releaseEntry(Bit#(TLog#(cRqNum)) n);
 endinterface
 
@@ -123,9 +123,9 @@ interface LLCRqMshr_sendRqToC#(
     type tagT,
     type reqT // child req type
 );
-    method ActionValue#(reqT) getRq(Bit#(TLog#(cRqNum)) n);
-    method ActionValue#(LLCRqState) getState(Bit#(TLog#(cRqNum)) n);
-    method ActionValue#(LLCRqSlot#(childNum, wayT, tagT)) getSlot(Bit#(TLog#(cRqNum)) n);
+    method reqT getRq(Bit#(TLog#(cRqNum)) n);
+    method LLCRqState getState(Bit#(TLog#(cRqNum)) n);
+    method LLCRqSlot#(childNum, wayT, tagT) getSlot(Bit#(TLog#(cRqNum)) n);
     method Action setSlot(Bit#(TLog#(cRqNum)) n, LLCRqSlot#(childNum, wayT, tagT) s);
     // find cRq that needs to send req to child to downgrade
     // (either replacement, or incompatible children states)
@@ -141,12 +141,12 @@ interface LLCRqMshr_pipelineResp#(
     type tagT,
     type reqT // child req type
 );
-    method ActionValue#(reqT) getRq(Bit#(TLog#(cRqNum)) n);
-    method ActionValue#(LLCRqState) getState(Bit#(TLog#(cRqNum)) n);
-    method ActionValue#(LLCRqSlot#(childNum, wayT, tagT)) getSlot(Bit#(TLog#(cRqNum)) n);
-    method ActionValue#(Maybe#(Line)) getData(Bit#(TLog#(cRqNum)) n);
-    method ActionValue#(Maybe#(Bit#(TLog#(cRqNum)))) getAddrSucc(Bit#(TLog#(cRqNum)) n);
-    method ActionValue#(Maybe#(Bit#(TLog#(cRqNum)))) getRepSucc(Bit#(TLog#(cRqNum)) n);
+    method reqT getRq(Bit#(TLog#(cRqNum)) n);
+    method LLCRqState getState(Bit#(TLog#(cRqNum)) n);
+    method LLCRqSlot#(childNum, wayT, tagT) getSlot(Bit#(TLog#(cRqNum)) n);
+    method Maybe#(Line) getData(Bit#(TLog#(cRqNum)) n);
+    method Maybe#(Bit#(TLog#(cRqNum))) getAddrSucc(Bit#(TLog#(cRqNum)) n);
+    method Maybe#(Bit#(TLog#(cRqNum))) getRepSucc(Bit#(TLog#(cRqNum)) n);
     method Action setData(Bit#(TLog#(cRqNum)) n, Maybe#(Line) d);
     method Action setStateSlot(
         Bit#(TLog#(cRqNum)) n, LLCRqState state, 
@@ -163,7 +163,7 @@ interface LLCRqMshr_pipelineResp#(
     // find existing cRq which has gone through pipeline, but not in Done state, and has no addr successor
     // (it could have rep successor)
     // i.e. search the end of dependency chain for req to the same addr
-    method ActionValue#(Maybe#(Bit#(TLog#(cRqNum)))) searchEndOfChain(Addr addr);
+    method Maybe#(Bit#(TLog#(cRqNum))) searchEndOfChain(Addr addr);
 endinterface
 
 interface LLCRqMshr#(
@@ -268,11 +268,11 @@ module mkLLCRqMshrSafe#(
     endfunction
 
     interface LLCRqMshr_transfer transfer;
-        method ActionValue#(reqT) getRq(cRqIndexT n);
+        method reqT getRq(cRqIndexT n);
             return reqVec[n][transfer_port];
         endmethod
 
-        method ActionValue#(slotT) getSlot(cRqIndexT n);
+        method slotT getSlot(cRqIndexT n);
             return slotVec[n][transfer_port];
         endmethod
 
@@ -301,25 +301,25 @@ module mkLLCRqMshrSafe#(
     endinterface
 
     interface LLCRqMshr_sendToM sendToM;
-        method ActionValue#(reqT) getRq(cRqIndexT n);
+        method reqT getRq(cRqIndexT n);
             return reqVec[n][sendToM_port];
         endmethod
 
-        method ActionValue#(slotT) getSlot(cRqIndexT n);
+        method slotT getSlot(cRqIndexT n);
             return slotVec[n][sendToM_port];
         endmethod
 
-        method ActionValue#(Maybe#(Line)) getData(cRqIndexT n);
+        method Maybe#(Line) getData(cRqIndexT n);
             return dataValidVec[n][sendToM_port] ? Valid (dataVec[n][sendToM_port]) : Invalid;
         endmethod
     endinterface
 
     interface LLCRqMshr_sendRsToDmaC sendRsToDmaC;
-        method ActionValue#(reqT) getRq(cRqIndexT n);
+        method reqT getRq(cRqIndexT n);
             return reqVec[n][sendRsToDmaC_port];
         endmethod
 
-        method ActionValue#(Maybe#(Line)) getData(cRqIndexT n);
+        method Maybe#(Line) getData(cRqIndexT n);
             return dataValidVec[n][sendRsToDmaC_port] ? Valid (dataVec[n][sendRsToDmaC_port]) : Invalid;
         endmethod
 
@@ -333,15 +333,15 @@ module mkLLCRqMshrSafe#(
     endinterface
 
     interface LLCRqMshr_sendRqToC sendRqToC;
-        method ActionValue#(reqT) getRq(cRqIndexT n);
+        method reqT getRq(cRqIndexT n);
             return reqVec[n][sendRqToC_port];
         endmethod
 
-        method ActionValue#(LLCRqState) getState(cRqIndexT n);
+        method LLCRqState getState(cRqIndexT n);
             return stateVec[n][sendRqToC_port];
         endmethod
 
-        method ActionValue#(slotT) getSlot(cRqIndexT n);
+        method slotT getSlot(cRqIndexT n);
             return slotVec[n][sendRqToC_port];
         endmethod
 
@@ -365,27 +365,27 @@ module mkLLCRqMshrSafe#(
     endinterface
 
     interface LLCRqMshr_pipelineResp pipelineResp;
-        method ActionValue#(reqT) getRq(cRqIndexT n);
+        method reqT getRq(cRqIndexT n);
             return reqVec[n][pipelineResp_port];
         endmethod
 
-        method ActionValue#(LLCRqState) getState(cRqIndexT n);
+        method LLCRqState getState(cRqIndexT n);
             return stateVec[n][pipelineResp_port];
         endmethod
 
-        method ActionValue#(slotT) getSlot(cRqIndexT n);
+        method slotT getSlot(cRqIndexT n);
             return slotVec[n][pipelineResp_port];
         endmethod
 
-        method ActionValue#(Maybe#(Line)) getData(cRqIndexT n);
+        method Maybe#(Line) getData(cRqIndexT n);
             return dataValidVec[n][pipelineResp_port] ? Valid (dataVec[n][pipelineResp_port]) : Invalid;
         endmethod
 
-        method ActionValue#(Maybe#(cRqIndexT)) getAddrSucc(cRqIndexT n);
+        method Maybe#(cRqIndexT) getAddrSucc(cRqIndexT n);
             return addrSuccValidVec[n][pipelineResp_port] ? Valid (addrSuccFile.sub(n)) : Invalid;
         endmethod
 
-        method ActionValue#(Maybe#(cRqIndexT)) getRepSucc(cRqIndexT n);
+        method Maybe#(cRqIndexT) getRepSucc(cRqIndexT n);
             return repSuccValidVec[n][pipelineResp_port] ? Valid (repSuccFile.sub(n)) : Invalid;
         endmethod
 
@@ -409,7 +409,7 @@ module mkLLCRqMshrSafe#(
             repSuccFile.upd(n, fromMaybe(?, succ));
         endmethod
 
-        method ActionValue#(Maybe#(cRqIndexT)) searchEndOfChain(Addr addr);
+        method Maybe#(cRqIndexT) searchEndOfChain(Addr addr);
             function Bool isEndOfChain(Integer i);
                 // check entry i is end of chain or not
                 let state = stateVec[i][pipelineResp_port];

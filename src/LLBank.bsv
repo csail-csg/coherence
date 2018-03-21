@@ -255,7 +255,7 @@ module mkLLBank#(
         // XXX don't change MSHR entry to Init
         // later cRq to same addr needs to be appended after this one
         // send to pipeline
-        cRqT req <- cRqMshr.transfer.getRq(n);
+        cRqT req = cRqMshr.transfer.getRq(n);
         pipeline.send(CRq (LLPipeCRqIn {
             addr: req.addr,
             mshrIdx: n
@@ -369,8 +369,8 @@ module mkLLBank#(
         cRqIndexT n = mRs.id.mshrIdx;
         Line respData = mRs.data;
         // get correspond cRq & slot
-        cRqT cRq <- cRqMshr.transfer.getRq(n);
-        cRqSlotT cSlot <- cRqMshr.transfer.getSlot(n);
+        cRqT cRq = cRqMshr.transfer.getRq(n);
+        cRqSlotT cSlot = cRqMshr.transfer.getSlot(n);
         doAssert(isRqFromC(cRq.id), "refill mem resp must be for child req");
         // send to pipeline
         pipeline.send(MRs (LLPipeMRsIn {
@@ -403,9 +403,9 @@ module mkLLBank#(
     rule sendToM;
         ToMemType t = toMInfoQ.first.t;
         cRqIndexT n = toMInfoQ.first.mshrIdx;
-        cRqT cRq <- cRqMshr.sendToM.getRq(n);
-        cRqSlotT cSlot <- cRqMshr.sendToM.getSlot(n);
-        Maybe#(Line) data <- cRqMshr.sendToM.getData(n);
+        cRqT cRq = cRqMshr.sendToM.getRq(n);
+        cRqSlotT cSlot = cRqMshr.sendToM.getSlot(n);
+        Maybe#(Line) data = cRqMshr.sendToM.getData(n);
         $display("%t LL %m sendToM: ", $time, 
             fshow(toMInfoQ.first), " ; ",
             fshow(cRq), " ; ",
@@ -495,8 +495,8 @@ module mkLLBank#(
     rule sendRsLdToDma;
         rsLdToDmaIndexQ.deq;
         cRqIndexT n = rsLdToDmaIndexQ.first;
-        cRqT cRq <- cRqMshr.sendRsToDmaC.getRq(n);
-        Maybe#(Line) data <- cRqMshr.sendRsToDmaC.getData(n);
+        cRqT cRq = cRqMshr.sendRsToDmaC.getRq(n);
+        Maybe#(Line) data = cRqMshr.sendRsToDmaC.getData(n);
         $display("%t LL %m sendRsToDma: Ld: ", $time,
             fshow(n), " ; ",
             fshow(cRq), " ; ",
@@ -520,7 +520,7 @@ module mkLLBank#(
     rule sendRsStToDma;
         rsStToDmaIndexQ.deq;
         cRqIndexT n = rsStToDmaIndexQ.first;
-        cRqT cRq <- cRqMshr.sendRsToDmaC.getRq(n);
+        cRqT cRq = cRqMshr.sendRsToDmaC.getRq(n);
         $display("%t LL %m sendRsToDma: St: ", $time,
             fshow(n), " ; ",
             fshow(cRq)
@@ -541,8 +541,8 @@ module mkLLBank#(
         // send upgrade resp to child
         rsToCIndexQ.deq;
         cRqIndexT n = rsToCIndexQ.first;
-        cRqT cRq <- cRqMshr.sendRsToDmaC.getRq(n);
-        Maybe#(Line) rsData <- cRqMshr.sendRsToDmaC.getData(n);
+        cRqT cRq = cRqMshr.sendRsToDmaC.getRq(n);
+        Maybe#(Line) rsData = cRqMshr.sendRsToDmaC.getData(n);
         $display("%t LL %m sendRsToC: ", $time, 
             fshow(n), " ; ", 
             fshow(cRq), " ; ", 
@@ -601,9 +601,9 @@ module mkLLBank#(
         // XXX stall if cRq n is processed in pipelineResp
         check(notPipelineResp(n));
 
-        cRqT cRq <- cRqMshr.sendRqToC.getRq(n);
-        cRqSlotT cSlot <- cRqMshr.sendRqToC.getSlot(n);
-        LLCRqState cState <- cRqMshr.sendRqToC.getState(n);
+        cRqT cRq = cRqMshr.sendRqToC.getRq(n);
+        cRqSlotT cSlot = cRqMshr.sendRqToC.getSlot(n);
+        LLCRqState cState = cRqMshr.sendRqToC.getState(n);
         doAssert(cState == WaitSt || cState == WaitOldTag, 
             "only WaitSt and WaitOldTag needs req child"
         );
@@ -654,6 +654,16 @@ module mkLLBank#(
     // Final stage of pipeline: process all kinds of msg
     pipeOutT pipeOut = pipeline.first;
     ramDataT ram = pipeOut.ram;
+    // select getCSlot, getRepSucc from cRqMshr
+    cRqIndexT pipeOutCRqIdx = (case(pipeOut.cmd) matches
+        tagged LLCRq .n: return n;
+        default: return ram.info.owner matches tagged Valid .cOwner ? cOwner.mshrIdx : 0; // LLMRs LLCRs
+    endcase);
+    cRqSlotT pipeOutCSlot = cRqMshr.pipelineResp.getSlot(pipeOutCRqIdx);
+    Maybe#(cRqIndexT) pipeOutRepSucc = cRqMshr.pipelineResp.getRepSucc(pipeOutCRqIdx);
+    Maybe#(cRqIndexT) pipeOutAddrSucc = cRqMshr.pipelineResp.getAddrSucc(pipeOutCRqIdx);
+    LLCRqState pipeOutCState = cRqMshr.pipelineResp.getState(pipeOutCRqIdx);
+    cRqT pipeOutCRq = cRqMshr.pipelineResp.getRq(pipeOutCRqIdx);
 
     // function to process cRq hit (MSHR slot may have garbage)
     function Action cRqFromCHit(cRqIndexT n, cRqT cRq);
@@ -662,6 +672,7 @@ module mkLLBank#(
             fshow(n), " ; ",
             fshow(cRq)
         );
+        doAssert(n == pipeOutCRqIdx, "must match pipe out cRq idx");
         doAssert(isRqFromC(cRq.id), "should be cRq from child");
         doAssert(ram.info.tag == getTag(cRq.addr) && ram.info.cs > I,
             // this function is called by mRs, cRq, cRs
@@ -683,7 +694,7 @@ module mkLLBank#(
             newCs = M;
         end
         // deq pipeline or swap in successor
-        Maybe#(cRqIndexT) succ <- cRqMshr.pipelineResp.getAddrSucc(n);
+        Maybe#(cRqIndexT) succ = pipeOutAddrSucc;
         pipeline.deqWrite(succ, RamData {
             info: CacheInfo {
                 tag: getTag(cRq.addr), // should be the same as original tag
@@ -709,6 +720,7 @@ module mkLLBank#(
             fshow(n), " ; ",
             fshow(cRq)
         );
+        doAssert(n == pipeOutCRqIdx, "must match pipe out cRq idx");
         doAssert(isRqFromDma(cRq.id), "should be cRq from dma");
         doAssert(ram.info.tag == getTag(cRq.addr) && ram.info.cs > I,
             "cRqHit but tag or cs incorrect"
@@ -720,13 +732,13 @@ module mkLLBank#(
             newCs = M;
         end
         // update cache line
-        Maybe#(Line) wrData <- cRqMshr.pipelineResp.getData(n);
+        Maybe#(Line) wrData = cRqMshr.pipelineResp.getData(n);
         doAssert(isValid(wrData) == (cRq.byteEn != replicate(False)),
             "dma write should carry valid data"
         );
         Line newLine = getUpdatedLine(ram.line, cRq.byteEn, validValue(wrData));
         // deq pipeline or swap in successor
-        Maybe#(cRqIndexT) succ <- cRqMshr.pipelineResp.getAddrSucc(n);
+        Maybe#(cRqIndexT) succ = pipeOutAddrSucc;
         pipeline.deqWrite(succ, RamData {
             info: CacheInfo {
                 tag: getTag(cRq.addr), // should be the same as original tag
@@ -811,11 +823,11 @@ module mkLLBank#(
         $display("%t LL %m pipelineResp: ", $time, fshow(pipeOut));
         // cs and dir in ram have been merged with modification caused by mRs/cRs cmd
 
-        cRqT cRq <- cRqMshr.pipelineResp.getRq(n);
+        cRqT cRq = pipeOutCRq;
         $display("%t LL %m pipelineResp: cRq: ", $time, fshow(n), " ; ", fshow(cRq));
         
         // find end of dependency chain
-        Maybe#(cRqIndexT) cRqEOC <- cRqMshr.pipelineResp.searchEndOfChain(cRq.addr);
+        Maybe#(cRqIndexT) cRqEOC = cRqMshr.pipelineResp.searchEndOfChain(cRq.addr);
 
         // function to check whether children needs downgrade for req from child (miss no replace)
         function Vector#(childNum, DirPend) getDirPendNonCompatForChild;
@@ -857,7 +869,7 @@ module mkLLBank#(
             doAssert(isRqFromC(cRq.id), "should be cRq from child");
             // it is impossible in LLC to have slot.waitP == True in this function
             // because there is no pRq in LLC to interrupt a cRq
-            cRqSlotT cSlot <- cRqMshr.pipelineResp.getSlot(n);
+            cRqSlotT cSlot = pipeOutCSlot;
             doAssert(!cSlot.waitP, "waitP must be false");
             // in LLC, we req memory only when cur cs is I
             if(ram.info.cs == I) begin
@@ -896,7 +908,7 @@ module mkLLBank#(
             );
             // it is impossible in LLC to have slot.waitP == True in this function
             // because there is no pRq in LLC to interrupt a cRq
-            cRqSlotT cSlot <- cRqMshr.pipelineResp.getSlot(n);
+            cRqSlotT cSlot = pipeOutCSlot;
             doAssert(!cSlot.waitP, "waitP must be false");
             // update mshr
             cRqMshr.pipelineResp.setStateSlot(n, WaitSt, LLCRqSlot {
@@ -925,7 +937,7 @@ module mkLLBank#(
             if(dirPend == replicate(Invalid)) begin
                 // directly evict the line
                 // this cRq cannot have repSucc, since it has not occupied the line
-                Maybe#(cRqIndexT) repSucc <- cRqMshr.pipelineResp.getRepSucc(n);
+                Maybe#(cRqIndexT) repSucc = pipeOutRepSucc;
                 doAssert(!isValid(repSucc), "cannot have rep succ");
                 cRqFromCEvict(n, cRq, Invalid);
             end
@@ -964,7 +976,7 @@ module mkLLBank#(
         if(ram.info.owner matches tagged Valid .cOwner) begin
             if(cOwner.mshrIdx != n) begin
                 // owner is another cRq, so must just go through tag match
-                LLCRqState cState <- cRqMshr.pipelineResp.getState(n);
+                LLCRqState cState = pipeOutCState;
                 doAssert(cState == Init, "owner is other, must first time go through tag match");
                 // tag match must be hit (because replacement algo won't give a way with owner)
                 doAssert(ram.info.cs > I && ram.info.tag == getTag(cRq.addr), 
@@ -996,7 +1008,7 @@ module mkLLBank#(
             end
             else begin
                 // owner is myself, so must be swapped in
-                LLCRqState cState <- cRqMshr.pipelineResp.getState(n);
+                LLCRqState cState = pipeOutCState;
                 doAssert(cState == Depend, "owner is myself, must be swapped in");
                 // tag should match, since always swapped in by cRq (which occupies the line and completes)
                 // so cache state must be > I
@@ -1038,7 +1050,7 @@ module mkLLBank#(
             // here are two cases:
             // 1. cRq in Init state, first time go through tag match
             // 2. cRq in Depend state (due to rep dep, or addr dep on DMA req), waken up when replacement or DMA req is done
-            LLCRqState cState <- cRqMshr.pipelineResp.getState(n);
+            LLCRqState cState = pipeOutCState;
 
             // only check for cRqEOC to append to dependency chain when firt time go through tag match
             if(cRqEOC matches tagged Valid .m &&& cState == Init) begin
@@ -1099,12 +1111,12 @@ module mkLLBank#(
                         cRqMshr.pipelineResp.setStateSlot(n, Done, ?);
                         pipeline.deqWrite(Invalid, pipeOut.ram);
                         // retry successor (cannot swap in since we don't have a line to occupy)
-                        Maybe#(cRqIndexT) addrSucc <- cRqMshr.pipelineResp.getAddrSucc(n);
+                        Maybe#(cRqIndexT) addrSucc = pipeOutAddrSucc;
                         if(addrSucc matches tagged Valid .m) begin
                             cRqRetryIndexQ.enq(m);
                         end
                         // since we haven't occupied any line, we cannot have repSucc)
-                        Maybe#(cRqIndexT) repSucc <- cRqMshr.pipelineResp.getRepSucc(n);
+                        Maybe#(cRqIndexT) repSucc = pipeOutRepSucc;
                         doAssert(!isValid(repSucc), "should not have any rep succ");
                     end
                 end
@@ -1118,8 +1130,8 @@ module mkLLBank#(
         doAssert(isValid(ram.info.owner), "mRs owner must match some cRq");
         CRqOwner#(cRqIndexT) cOwner = validValue(ram.info.owner);
         // process cRq
-        cRqT cRq <- cRqMshr.pipelineResp.getRq(cOwner.mshrIdx);
-        cRqSlotT cSlot <- cRqMshr.pipelineResp.getSlot(cOwner.mshrIdx);
+        cRqT cRq = pipeOutCRq;
+        cRqSlotT cSlot = pipeOutCSlot;
         $display("%t LL %m pipelineResp: mRs: ", $time,
             fshow(cOwner), " ; ",
             fshow(cRq), " ; ",
@@ -1148,9 +1160,9 @@ module mkLLBank#(
         doAssert(ram.info.cs > I, "cRs should hit on a line");
         // check owner of the line
         if(ram.info.owner matches tagged Valid .cOwner) begin
-            cRqT cRq <- cRqMshr.pipelineResp.getRq(cOwner.mshrIdx);
-            cRqSlotT cSlot <- cRqMshr.pipelineResp.getSlot(cOwner.mshrIdx);
-            LLCRqState cState <- cRqMshr.pipelineResp.getState(cOwner.mshrIdx);
+            cRqT cRq = pipeOutCRq;
+            cRqSlotT cSlot = pipeOutCSlot;
+            LLCRqState cState = pipeOutCState;
             $display("%t LL %m pipelineResp: cRs: match cRq: ", $time,
                 fshow(cOwner), " ; ",
                 fshow(cRq), " ; ",
@@ -1173,7 +1185,7 @@ module mkLLBank#(
                 // check whether replacement is done
                 if(newDirPend == replicate(Invalid)) begin
                     // replacement done, evict line
-                    Maybe#(cRqIndexT) repSucc <- cRqMshr.pipelineResp.getRepSucc(cOwner.mshrIdx);
+                    Maybe#(cRqIndexT) repSucc = pipeOutRepSucc;
                     cRqFromCEvict(cOwner.mshrIdx, cRq, repSucc);
                     $display("%t LL %m pipelineResp: cRs: match cRq: replace done: ", $time,
                         fshow(repSucc)

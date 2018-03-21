@@ -125,6 +125,7 @@ module mkLLPipe(
     Alias#(ramDataT, RamData#(tagT, Msi, dirT, ownerT, Line)),
     Alias#(respStateT, RespState#(Msi)),
     Alias#(tagMatchResT, TagMatchResult#(wayT)),
+    Alias#(dataIndexT, Bit#(TAdd#(TLog#(wayNum), indexSz))),
     // requirement 
     Alias#(indexT, Bit#(indexSz)),
     Alias#(tagT, Bit#(tagSz)),
@@ -134,7 +135,7 @@ module mkLLPipe(
 );
     // RAMs
     Vector#(wayNum, RWBramCore#(indexT, infoT)) infoRam <- replicateM(mkRWBramCore);
-    Vector#(wayNum, RWBramCore#(indexT, Line)) dataRam <- replicateM(mkRWBramCore);
+    RWBramCore#(dataIndexT, Line) dataRam <- mkRWBramCore;
     
     // initialize RAM
     Reg#(Bool) initDone <- mkReg(False);

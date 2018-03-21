@@ -117,7 +117,7 @@ module mkCCPipe#(
     function Action checkDownCRsDataValid(pipeCmdT cmd, dirT dir, Bool dataValid)
 )(
     Vector#(wayNum, RWBramCore#(indexT, infoT)) infoRam,
-    Vector#(wayNum, RWBramCore#(indexT, lineT)) dataRam,
+    RWBramCore#(dataIndexT, lineT) dataRam,
     CCPipe#(wayNum, indexT, tagT, msiT, dirT, ownerT, lineT, pipeCmdT) ifc
 ) provisos (
     Alias#(wayT, Bit#(TLog#(wayNum))),
@@ -135,7 +135,9 @@ module mkCCPipe#(
     Bits#(ownerT, _ownerSz),
     Bits#(lineT, _lineSz),
     Bits#(pipeCmdT, _pipeCmdSz),
-    Eq#(indexT)
+    Eq#(indexT),
+    // index to data ram: {way, normal index}
+    Alias#(dataIndexT, Bit#(TAdd#(TLog#(wayNum), _indexSz)))
 );
 
     // pipeline regs
@@ -156,6 +158,11 @@ module mkCCPipe#(
 
     // bypass write to ram
     RWire#(bypassInfoT) bypass <- mkRWire;
+
+    // get index to dataRam
+    function dataIndexT getDataIndex(wayT w, indexT i);
+        return {w, pack(i)};
+    endfunction
 
     // stage 2: first get bypass
     (* fire_when_enabled, no_implicit_conditions *)
@@ -190,7 +197,7 @@ module mkCCPipe#(
         Bool pRqMiss = tmRes.pRqMiss;
         // read data
         indexT index = getIndex(e2m.cmd);
-        dataRam[way].rdReq(index);
+        dataRam.rdReq(getDataIndex(way, index));
         // set mat2out & merge with CRs/PRs & merge with bypass
         // resp info has higher priority than bypass
         match2OutT m2o = Match2Out {
@@ -226,7 +233,7 @@ module mkCCPipe#(
             pRqMiss: m2o.pRqMiss,
             ram: RamData {
                 info: m2o.info,
-                line: fromMaybe(dataRam[m2o.way].rdResp, m2o.line)
+                line: fromMaybe(dataRam.rdResp, m2o.line)
             }
         };
     endfunction
@@ -273,7 +280,7 @@ module mkCCPipe#(
         indexT index = getIndex(m2o.cmd);
         // write ram
         infoRam[way].wrReq(index, wrRam.info);
-        dataRam[way].wrReq(index, wrRam.line);
+        dataRam.wrReq(getDataIndex(way, index), wrRam.line);
         // set bypass to Enq and Match stages
         bypass.wset(BypassInfo {
             index: index,
@@ -294,7 +301,7 @@ module mkCCPipe#(
         end
         else begin
             // XXX deq ram resp, I think this should not block
-            dataRam[way].deqRdResp;
+            dataRam.deqRdResp;
             // reset pipeline reg
             mat2Out_out <= Invalid;
         end

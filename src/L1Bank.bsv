@@ -138,6 +138,9 @@ module mkL1Bank#(
     Reg#(Maybe#(LineAddr)) linkAddr = linkAddrEhr[0]; // normal processing use port 0
     Reg#(Maybe#(LineAddr)) linkAddrRst = linkAddrEhr[1]; // reset by outside use port 1
 
+    // we process AMO resp in a new cycle to cut critical path
+    Reg#(Maybe#(Tuple2#(cRqIdxT, procRqT))) processAmo <- mkReg(Invalid);
+
     // performance
 `ifdef PERF_COUNT
     Reg#(Bool) doStats <- mkConfigReg(False);
@@ -346,15 +349,7 @@ module mkL1Bank#(
                 linkAddr <= Valid (getLineAddr(req.addr));
             end
             Amo: begin
-                Bool upper32 = req.addr[2] == 1;
-                Data curData = curLine[dataSel];
-                // resp processor
-                Data resp = req.amoInst.doubleWord ? curData : signExtend(
-                    upper32 ? curData[63:32] : curData[31:0]
-                );
-                procResp.respLrScAmo(req.id, resp);
-                // calculate new data to write
-                newLine[dataSel] = amoExec(req.amoInst, curData, req.data, upper32);
+                noAction;
             end
             Sc: begin
                 // check Sc succeeds or not
@@ -379,6 +374,46 @@ module mkL1Bank#(
                 doAssert(False, "unknown mem op");
             end
         endcase
+        // deq pipeline or swap in successor ONLY when not AMO: to cut critical
+        // path for AMO
+        if(req.op != Amo) begin
+            Maybe#(cRqIdxT) succ = cRqMshr.pipelineResp.getSucc(n);
+            pipeline.deqWrite(succ, RamData {
+                info: CacheInfo {
+                    tag: getTag(req.addr), // should be the same as original tag
+                    cs: ram.info.cs, // use cs in ram, because ram.info.cs > req.toState is possible
+                    dir: ?,
+                    owner: succ
+                },
+                line: newLine // write new data into cache
+            });
+            $display("%t L1 %m pipelineResp: Hit func: update ram: ", $time,
+                fshow(newLine), " ; ",
+                fshow(succ)
+            );
+            // release MSHR entry
+            cRqMshr.pipelineResp.releaseEntry(n);
+        end
+        else begin
+            processAmo <= Valid (tuple2(n, req));
+            $display("%t L1 %m pipelineResp: Hit func: AMO process in next cycle", $time);
+        end
+    endaction
+    endfunction
+
+    rule doProcessAmo(processAmo matches tagged Valid {.n, .req});
+        Line curLine = ram.line;
+        Line newLine = curLine;
+        LineDataOffset dataSel = getLineDataOffset(req.addr);
+        Bool upper32 = req.addr[2] == 1;
+        Data curData = curLine[dataSel];
+        // resp processor
+        Data resp = req.amoInst.doubleWord ? curData : signExtend(
+            upper32 ? curData[63:32] : curData[31:0]
+        );
+        procResp.respLrScAmo(req.id, resp);
+        // calculate new data to write
+        newLine[dataSel] = amoExec(req.amoInst, curData, req.data, upper32);
         // deq pipeline or swap in successor
         Maybe#(cRqIdxT) succ = cRqMshr.pipelineResp.getSucc(n);
         pipeline.deqWrite(succ, RamData {
@@ -390,20 +425,17 @@ module mkL1Bank#(
             },
             line: newLine // write new data into cache
         });
-        $display("%t L1 %m pipelineResp: Hit func: update ram: ", $time,
+        $display("%t L1 %m processAmo: update ram: ", $time,
             fshow(newLine), " ; ",
             fshow(succ)
         );
         // release MSHR entry
         cRqMshr.pipelineResp.releaseEntry(n);
-    endaction
-    endfunction
+        // reset state
+        processAmo <= Invalid;
+    endrule
 
-    //rule pipelineResp_cRq_debug(pipeOut.cmd matches tagged L1CRq .n);
-    //    $display("%t L1 %m pipelineResp debug: ", $time, fshow(pipeOut));
-    //endrule
-
-    rule pipelineResp_cRq(pipeOut.cmd matches tagged L1CRq .n);
+    rule pipelineResp_cRq(!isValid(processAmo) &&& pipeOut.cmd matches tagged L1CRq .n);
         $display("%t L1 %m pipelineResp: ", $time, fshow(pipeOut));
 
         procRqT procRq = pipeOutCRq;
@@ -551,7 +583,7 @@ module mkL1Bank#(
         end
     endrule
 
-    rule pipelineResp_pRs(pipeOut.cmd == L1PRs);
+    rule pipelineResp_pRs(!isValid(processAmo) &&& pipeOut.cmd == L1PRs);
         $display("%t L1 %m pipelineResp: ", $time, fshow(pipeOut));
         $display("%t L1 %m pipelineResp: pRs: ", $time);
 
@@ -571,7 +603,7 @@ module mkL1Bank#(
         end
     endrule
 
-    rule pipelineResp_pRq(pipeOut.cmd matches tagged L1PRq .n);
+    rule pipelineResp_pRq(!isValid(processAmo) &&& pipeOut.cmd matches tagged L1PRq .n);
         pRqFromPT pRq = pRqMshr.pipelineResp.getRq(n);
         $display("%t L1 %m pipelineResp: pRq: ", $time, fshow(n), " ; ", fshow(pRq));
 

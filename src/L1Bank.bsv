@@ -45,6 +45,7 @@ import Fifo::*;
 import CacheUtils::*;
 import CrossBar::*;
 import Performance::*;
+import LatencyTimer::*;
 
 // although pRq never appears in dependency chain
 // we still need pRq MSHR to limit the number of pRq
@@ -78,7 +79,7 @@ interface L1Bank#(
     interface Get#(L1PRqStuck) pRqStuck;
     // performance
     method Action setPerfStatus(Bool stats);
-    method Data getPerfData(L1PerfType t);
+    method Data getPerfData(L1DPerfType t);
 endinterface
 
 module mkL1Bank#(
@@ -145,8 +146,15 @@ module mkL1Bank#(
     Count#(Data) stCnt <- mkCount(0);
     Count#(Data) amoCnt <- mkCount(0);
     Count#(Data) ldMissCnt <- mkCount(0);
-    Count#(Data) stMissCnt <- mkCount(0);
-    Count#(Data) amoMissCnt <- mkCount(0);
+    Count#(Data) stMissDataCnt <- mkCount(0);
+    Count#(Data) stMissPermCnt <- mkCount(0);
+    Count#(Data) amoMissDataCnt <- mkCount(0);
+    Count#(Data) amoMissPermCnt <- mkCount(0);
+    Count#(Data) ldMissLat <- mkCount(0);
+    Count#(Data) stMissLat <- mkCount(0);
+    Count#(Data) amoMissLat <- mkCount(0);
+    
+    LatencyTimer#(cRqNum, 10) latTimer <- mkLatencyTimer; // max 1K cycle latency
 
     function Action incrReqCnt(MemOp op);
     action
@@ -160,13 +168,33 @@ module mkL1Bank#(
     endaction
     endfunction
 
-    function Action incrMissCnt(MemOp op);
+    function Action incrMissCnt(MemOp op, Msi cs, cRqIdxT idx);
     action
         if(doStats) begin
+            let lat <- latTimer.done(idx);
             case(op)
-                Ld: ldMissCnt.incr(1);
-                St: stMissCnt.incr(1);
-                Lr, Sc, Amo: amoMissCnt.incr(1);
+                Ld: begin
+                    ldMissLat.incr(zeroExtend(lat));
+                    ldMissCnt.incr(1);
+                end
+                St: begin
+                    stMissLat.incr(zeroExtend(lat));
+                    if(cs == I) begin
+                        stMissDataCnt.incr(1);
+                    end
+                    else begin
+                        stMissPermCnt.incr(1);
+                    end
+                end
+                Lr, Sc, Amo: begin
+                    amoMissLat.incr(zeroExtend(lat));
+                    if(cs == I) begin
+                        amoMissDataCnt.incr(1);
+                    end
+                    else begin
+                        amoMissPermCnt.incr(1);
+                    end
+                end
             endcase
         end
     endaction
@@ -298,6 +326,12 @@ module mkL1Bank#(
             fshow(slot), " ; ", 
             fshow(cRqToP)
         );
+`ifdef PERF_COUNT
+        // performance counter: start miss timer
+        if(doStats) begin
+            latTimer.start(n);
+        end
+`endif
     endrule
 
     // last stage of pipeline: process req
@@ -563,7 +597,7 @@ module mkL1Bank#(
             cRqHit(cOwner, procRq);
 `ifdef PERF_COUNT
             // performance counter: miss cRq
-            incrMissCnt(procRq.op);
+            incrMissCnt(procRq.op, ram.info.cs, cOwner);
 `endif
         end
         else begin
@@ -711,12 +745,17 @@ module mkL1Bank#(
     method Data getPerfData(L1PerfType t);
         return (case(t)
 `ifdef PERF_COUNT
-            LdCnt: ldCnt;
-            StCnt: stCnt;
-            AmoCnt: amoCnt;
-            LdMissCnt: ldMissCnt;
-            StMissCnt: stMissCnt;
-            AmoMissCnt: amoMissCnt;
+            L1DLdCnt: ldCnt;
+            L1DStCnt: stCnt;
+            L1DAmoCnt: amoCnt;
+            L1DLdMissCnt: ldMissCnt;
+            L1DStMissDataCnt: stMissDataCnt;
+            L1DStMissPermCnt: stMissPermCnt;
+            L1DAmoMissDataCnt: amoMissDataCnt;
+            L1DAmoMissPerfCnt: amoMissPermCnt;
+            L1DLdMissLat: ldMissLat;
+            L1DStMissLat: stMissLat;
+            L1DAmoMissLat: amoMissLat;
 `endif
             default: 0;
         endcase);

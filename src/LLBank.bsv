@@ -79,6 +79,9 @@ interface LLBank#(
     interface MemFifoClient#(LdMemRqId#(Bit#(TLog#(cRqNum))), void) to_mem;
     // detect deadlock: only in use when macro CHECK_DEADLOCK is defined
     interface Get#(LLCRqStuck#(childNum, cRqIdT, dmaRqIdT)) cRqStuck;
+    // performance
+    method Action setPerfStatus(Bool stats);
+    method Data getPerfData(LLCPerfType t);
 endinterface
 
 typedef struct {
@@ -214,8 +217,8 @@ module mkLLBank#(
 
     function Action incrMissCnt(cRqIndexT idx, Bool isDma);
     action
+        let lat <- latTimer.done(idx);
         if(doStats) begin
-            let lat <- latTimer.done(idx);
             if(isDma) begin
                 dmaMemLdCnt.incr(1);
                 dmaMemLdLat.incr(zeroExtend(lat));
@@ -431,7 +434,7 @@ module mkLLBank#(
         rsLdToDmaIndexQ_mRsDeq.enq(mRs.id.mshrIdx);
 `ifdef PERF_COUNT
         // performance counter: dma miss lat and cnt
-        incrMissCnt(mRs.id.msrhIdx, True);
+        incrMissCnt(mRs.id.mshrIdx, True);
 `endif
     endrule
 
@@ -471,9 +474,7 @@ module mkLLBank#(
             doAssert(!doLdAfterReplace, "doLdAfterReplace should be false");
 `ifdef PERF_COUNT
             // performance counter: start miss timer
-            if(doStats) begin
-                latTimer.start(n);
-            end
+            latTimer.start(n);
 `endif
 `ifdef DEBUG_DMA
             if(cRq.id matches tagged Dma .dmaId) begin
@@ -518,9 +519,7 @@ module mkLLBank#(
                 $display("%t LL %m sendToM: rep then ld: ld: ", $time, fshow(msg));
 `ifdef PERF_COUNT
                 // performance counter: start miss timer
-                if(doStats) begin
-                    latTimer.start(n);
-                end
+                latTimer.start(n);
 `endif
             end
             else begin // do write back part
@@ -1353,7 +1352,7 @@ module mkLLBank#(
 `endif
     endmethod 
 
-    method Data getPerfData(L1PerfType t);
+    method Data getPerfData(LLCPerfType t);
         return (case(t)
 `ifdef PERF_COUNT
             LLCDmaMemLdCnt: dmaMemLdCnt;

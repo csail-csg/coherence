@@ -165,8 +165,8 @@ module mkIBank#(
 
     function Action incrMissCnt(cRqIdxT idx);
     action
+        let lat <- latTimer.done(idx);
         if(doStats) begin
-            let lat <- latTimer(idx);
             ldMissLat.incr(zeroExtend(lat));
             ldMissCnt.incr(1);
         end
@@ -300,9 +300,7 @@ module mkIBank#(
         );
 `ifdef PERF_COUNT
         // performance counter: start miss timer
-        if(doStats) begin
-            latTimer.start(n);
-        end
+        latTimer.start(n);
 `endif
     endrule
 
@@ -523,7 +521,7 @@ module mkIBank#(
             cRqHit(cOwner, procRq);
 `ifdef PERF_COUNT
             // performance counter: miss cRq
-            incrMissCnt;
+            incrMissCnt(cOwner);
 `endif
         end
         else begin
@@ -638,11 +636,12 @@ module mkIBank#(
 `endif
     endmethod
 
-    method Data getPerfData(L1PerfType t);
+    method Data getPerfData(L1IPerfType t);
         return (case(t)
 `ifdef PERF_COUNT
-            LdCnt: ldCnt;
-            LdMissCnt: ldMissCnt;
+            L1ILdCnt: ldCnt;
+            L1ILdMissCnt: ldMissCnt;
+            L1ILdMissLat: ldMissLat;
 `endif
             default: 0;
         endcase);

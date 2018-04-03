@@ -170,8 +170,8 @@ module mkL1Bank#(
 
     function Action incrMissCnt(MemOp op, Msi cs, cRqIdxT idx);
     action
+        let lat <- latTimer.done(idx);
         if(doStats) begin
-            let lat <- latTimer.done(idx);
             case(op)
                 Ld: begin
                     ldMissLat.incr(zeroExtend(lat));
@@ -328,9 +328,7 @@ module mkL1Bank#(
         );
 `ifdef PERF_COUNT
         // performance counter: start miss timer
-        if(doStats) begin
-            latTimer.start(n);
-        end
+        latTimer.start(n);
 `endif
     endrule
 
@@ -742,7 +740,7 @@ module mkL1Bank#(
 `endif
     endmethod 
 
-    method Data getPerfData(L1PerfType t);
+    method Data getPerfData(L1DPerfType t);
         return (case(t)
 `ifdef PERF_COUNT
             L1DLdCnt: ldCnt;
@@ -752,7 +750,7 @@ module mkL1Bank#(
             L1DStMissDataCnt: stMissDataCnt;
             L1DStMissPermCnt: stMissPermCnt;
             L1DAmoMissDataCnt: amoMissDataCnt;
-            L1DAmoMissPerfCnt: amoMissPermCnt;
+            L1DAmoMissPermCnt: amoMissPermCnt;
             L1DLdMissLat: ldMissLat;
             L1DStMissLat: stMissLat;
             L1DAmoMissLat: amoMissLat;
@@ -968,7 +966,7 @@ module mkL1Cache#(
         end
     endmethod
 
-    method Data getPerfData(L1PerfType t);
+    method Data getPerfData(L1DPerfType t);
         Vector#(bankNum, Data) d = ?;
         for(Integer i = 0; i < valueof(bankNum); i = i+1) begin
             d[i] = banks[i].getPerfData(t);

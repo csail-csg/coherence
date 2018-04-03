@@ -146,10 +146,8 @@ module mkL1Bank#(
     Count#(Data) stCnt <- mkCount(0);
     Count#(Data) amoCnt <- mkCount(0);
     Count#(Data) ldMissCnt <- mkCount(0);
-    Count#(Data) stMissDataCnt <- mkCount(0);
-    Count#(Data) stMissPermCnt <- mkCount(0);
-    Count#(Data) amoMissDataCnt <- mkCount(0);
-    Count#(Data) amoMissPermCnt <- mkCount(0);
+    Count#(Data) stMissCnt <- mkCount(0);
+    Count#(Data) amoMissCnt <- mkCount(0);
     Count#(Data) ldMissLat <- mkCount(0);
     Count#(Data) stMissLat <- mkCount(0);
     Count#(Data) amoMissLat <- mkCount(0);
@@ -168,7 +166,7 @@ module mkL1Bank#(
     endaction
     endfunction
 
-    function Action incrMissCnt(MemOp op, Msi cs, cRqIdxT idx);
+    function Action incrMissCnt(MemOp op, cRqIdxT idx);
     action
         let lat <- latTimer.done(idx);
         if(doStats) begin
@@ -179,21 +177,11 @@ module mkL1Bank#(
                 end
                 St: begin
                     stMissLat.incr(zeroExtend(lat));
-                    if(cs == I) begin
-                        stMissDataCnt.incr(1);
-                    end
-                    else begin
-                        stMissPermCnt.incr(1);
-                    end
+                    stMissCnt.incr(1);
                 end
                 Lr, Sc, Amo: begin
                     amoMissLat.incr(zeroExtend(lat));
-                    if(cs == I) begin
-                        amoMissDataCnt.incr(1);
-                    end
-                    else begin
-                        amoMissPermCnt.incr(1);
-                    end
+                    amoMissCnt.incr(1);
                 end
             endcase
         end
@@ -595,7 +583,7 @@ module mkL1Bank#(
             cRqHit(cOwner, procRq);
 `ifdef PERF_COUNT
             // performance counter: miss cRq
-            incrMissCnt(procRq.op, ram.info.cs, cOwner);
+            incrMissCnt(procRq.op, cOwner);
 `endif
         end
         else begin
@@ -747,10 +735,8 @@ module mkL1Bank#(
             L1DStCnt: stCnt;
             L1DAmoCnt: amoCnt;
             L1DLdMissCnt: ldMissCnt;
-            L1DStMissDataCnt: stMissDataCnt;
-            L1DStMissPermCnt: stMissPermCnt;
-            L1DAmoMissDataCnt: amoMissDataCnt;
-            L1DAmoMissPermCnt: amoMissPermCnt;
+            L1DStMissCnt: stMissCnt;
+            L1DAmoMissCnt: amoMissCnt;
             L1DLdMissLat: ldMissLat;
             L1DStMissLat: stMissLat;
             L1DAmoMissLat: amoMissLat;

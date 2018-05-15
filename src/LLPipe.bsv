@@ -27,9 +27,11 @@ import Types::*;
 import CCTypes::*;
 import CCPipe::*;
 import RWBramCore::*;
-import RandomReplace::*;
+import ReplacePolicy::*;
 
 // type param ordering: bank < child < way < index < tag < cRq
+
+// LL uses tree LRU
 
 // input types
 typedef struct {
@@ -75,17 +77,19 @@ interface LLPipe#(
         Bit#(TLog#(wayNum)),
         tagT, Msi, Vector#(childNum, Msi),
         Maybe#(CRqOwner#(cRqIdxT)),
+        TreeLRURepInfo#(wayNum),
         Line, LLCmd#(Bit#(TLog#(childNum)), cRqIdxT)
     ) first;
     method PipeOut#(
         Bit#(TLog#(wayNum)),
         tagT, Msi, Vector#(childNum, Msi),
         Maybe#(CRqOwner#(cRqIdxT)),
+        TreeLRURepInfo#(wayNum),
         Line, LLCmd#(Bit#(TLog#(childNum)), cRqIdxT)
     ) unguard_first;
     method Action deqWrite(
         Maybe#(cRqIdxT) swapRq,
-        RamData#(tagT, Msi, Vector#(childNum, Msi), Maybe#(CRqOwner#(cRqIdxT)), Line) wrRam // always write BRAM
+        RamData#(tagT, Msi, Vector#(childNum, Msi), Maybe#(CRqOwner#(cRqIdxT)), TreeLRURepInfo#(wayNum), Line) wrRam // always write BRAM
     );
 endinterface
 
@@ -117,12 +121,13 @@ module mkLLPipe(
     Alias#(wayT, Bit#(TLog#(wayNum))),
     Alias#(dirT, Vector#(childNum, Msi)),
     Alias#(ownerT, Maybe#(CRqOwner#(cRqIdxT))),
+    Alias#(repT, TreeLRURepInfo#(wayNum)),
     Alias#(pipeInT, LLPipeIn#(childT, wayT, cRqIdxT)),
     Alias#(pipeCmdT, LLPipeCmd#(childT, wayT, cRqIdxT)),
     Alias#(llCmdT, LLCmd#(childT, cRqIdxT)),
-    Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, dirT, ownerT, Line, llCmdT)), // output type
+    Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, dirT, ownerT, repT, Line, llCmdT)), // output type
     Alias#(infoT, CacheInfo#(tagT, Msi, dirT, ownerT)),
-    Alias#(ramDataT, RamData#(tagT, Msi, dirT, ownerT, Line)),
+    Alias#(ramDataT, RamData#(tagT, Msi, dirT, ownerT, repT, Line)),
     Alias#(respStateT, RespState#(Msi)),
     Alias#(tagMatchResT, TagMatchResult#(wayT)),
     Alias#(dataIndexT, Bit#(TAdd#(TLog#(wayNum), indexSz))),
@@ -131,10 +136,14 @@ module mkLLPipe(
     Alias#(tagT, Bit#(tagSz)),
     Alias#(cRqIdxT, Bit#(_cRqIdxSz)),
     Add#(indexSz, a__, AddrSz),
-    Add#(tagSz, b__, AddrSz)
+    Add#(tagSz, b__, AddrSz),
+    Add#(TExp#(TLog#(wayNum)), 0, wayNum),
+    Add#(1, TSub#(wayNum, 1), wayNum),
+    Add#(TLog#(wayNum), c__, TAdd#(TLog#(wayNum), 1))
 );
     // RAMs
     Vector#(wayNum, RWBramCore#(indexT, infoT)) infoRam <- replicateM(mkRWBramCore);
+    RWBramCore#(indexT, repT) repRam <- mkRWBramCore;
     RWBramCore#(dataIndexT, Line) dataRam <- mkRWBramCore;
     
     // initialize RAM
@@ -150,14 +159,13 @@ module mkLLPipe(
                 owner: Invalid
             });
         end
+        repRam.wrReq(initIndex, getTreeLRUInitVal);
+
         initIndex <= initIndex + 1;
         if(initIndex == maxBound) begin
             initDone <= True;
         end
     endrule
-
-    // random replacement
-    RandomReplace#(wayNum) randRep <- mkRandomReplace;
 
     // functions
     function Addr getAddrFromCmd(pipeCmdT cmd);
@@ -178,7 +186,8 @@ module mkLLPipe(
         pipeCmdT cmd,
         Vector#(wayNum, tagT) tagVec, 
         Vector#(wayNum, Msi) csVec, 
-        Vector#(wayNum, ownerT) ownerVec
+        Vector#(wayNum, ownerT) ownerVec,
+        repT rep
     );
         return actionvalue
             function tagT getTag(Addr a) = truncateLSB(a);
@@ -226,7 +235,7 @@ module mkLLPipe(
                         invalid[i] = csVec[i] == I;
                         unlocked[i] = !isValid(ownerVec[i]);
                     end
-                    Maybe#(wayT) repWay = randRep.getReplaceWay(unlocked, invalid);
+                    Maybe#(wayT) repWay = getReplaceWay(unlocked, invalid, getTreeLRUWay(rep));
                     // sanity check: repWay must be valid
                     doAssert(isValid(repWay), "should always find a way to replace");
                     return TagMatchResult {
@@ -266,14 +275,14 @@ module mkLLPipe(
     endaction
     endfunction
 
-    CCPipe#(wayNum, indexT, tagT, Msi, dirT, ownerT, Line, pipeCmdT) pipe <- mkCCPipe(
+    CCPipe#(wayNum, indexT, tagT, Msi, dirT, ownerT, repT, Line, pipeCmdT) pipe <- mkCCPipe(
         regToReadOnly(initDone), getIndex, tagMatch, updateChildDir, 
         checkUpMRsDataValid, checkDownCRsDataValid,
-        infoRam, dataRam
+        infoRam, repRam, dataRam
     );
 
     // get first output from CCPipe output
-    function pipeOutT getFirst(PipeOut#(wayT, tagT, Msi, dirT, ownerT, Line, pipeCmdT) pout);
+    function pipeOutT getFirst(PipeOut#(wayT, tagT, Msi, dirT, ownerT, repT, Line, pipeCmdT) pout);
         return PipeOut {
             cmd: (case(pout.cmd) matches
                 tagged CRq .rq: LLCRq (rq.mshrIdx);

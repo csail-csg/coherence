@@ -164,12 +164,14 @@ typedef struct {
 // ram output
 typedef struct {
     CacheInfo#(tagT, msiT, dirT, ownerT) info;
+    repT rep; // replacement info (e.g., LRU chain), this is for all the ways in the set
     lineT line;
 } RamData#(
     type tagT, 
     type msiT, 
     type dirT, 
-    type ownerT, 
+    type ownerT,
+    type repT,
     type lineT
 ) deriving(Bits, Eq, FShow);
 

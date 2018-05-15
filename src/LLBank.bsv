@@ -37,6 +37,7 @@ import Performance::*;
 import LatencyTimer::*;
 import Cntrs::*;
 import ConfigReg::*;
+import ReplacePolicy::*;
 
 // we use an infoQ to serialize all req to memory
 // this also ensures that cache pipeline is never blocked
@@ -758,6 +759,7 @@ module mkLLBank#(
                     default: return Invalid;
                 endcase)
             },
+            rep: updateTreeLRU(ram.rep, pipeOut.way),
             line: ram.line // use line in ram
         });
     endaction
@@ -802,6 +804,7 @@ module mkLLBank#(
                     default: return Invalid;
                 endcase)
             },
+            rep: updateTreeLRU(ram.rep, pipeOut.way),
             line: newLine // use new line
         });
         // update slot, data & send to indexQ
@@ -863,6 +866,7 @@ module mkLLBank#(
                     replacing: False // replacement is done right now
                 })
             },
+            rep: ram.rep,
             line: ? // data is no longer used
         });
     endaction
@@ -944,6 +948,7 @@ module mkLLBank#(
                     dir: ram.info.dir,
                     owner: Valid (CRqOwner {mshrIdx: n, replacing: False}) // owner is req itself
                 },
+                rep: ram.rep,
                 line: ram.line
             });
         endaction
@@ -975,6 +980,7 @@ module mkLLBank#(
                     dir: ram.info.dir,
                     owner: Valid (CRqOwner {mshrIdx: n, replacing: False}) // owner is req itself
                 },
+                rep: ram.rep,
                 line: ram.line
             });
         endaction
@@ -1003,6 +1009,7 @@ module mkLLBank#(
                             replacing: True // replacement is ongoing
                         })
                     },
+                    rep: ram.rep,
                     line: ram.line // keep data the same
                 });
                 cRqMshr.pipelineResp.setStateSlot(n, WaitOldTag, LLCRqSlot {

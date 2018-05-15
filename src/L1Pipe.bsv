@@ -27,13 +27,15 @@ import Types::*;
 import CCTypes::*;
 import CCPipe::*;
 import RWBramCore::*;
-import RandomReplace::*;
+import ReplacePolicy::*;
 
 // type param ordering: bank < way < index < tag < cRq < pRq
 
 // in L1 cache, only cRq can occupy cache line (pRq handled immediately)
 // replacement is always done immediately (never have replacing line)
 // so cache owner type is simply Maybe#(cRqIdxT)
+
+// L1 uses true LRU
 
 // input types
 typedef struct {
@@ -81,11 +83,12 @@ interface L1Pipe#(
         Bit#(TLog#(wayNum)), 
         tagT, Msi, void, // no dir
         Maybe#(cRqIdxT),
+        LRURepInfo#(wayNum),
         Line, L1Cmd#(cRqIdxT, pRqIdxT)
     ) first;
     method Action deqWrite(
         Maybe#(cRqIdxT) swapRq,
-        RamData#(tagT, Msi, void, Maybe#(cRqIdxT), Line) wrRam // always write BRAM
+        RamData#(tagT, Msi, void, Maybe#(cRqIdxT), LRURepInfo#(wayNum), Line) wrRam // always write BRAM
     );
 endinterface
 
@@ -111,12 +114,13 @@ module mkL1Pipe(
     Alias#(wayT, Bit#(TLog#(wayNum))),
     Alias#(dirT, void), // no directory
     Alias#(ownerT, Maybe#(cRqIdxT)),
+    Alias#(repT, LRURepInfo#(wayNum)),
     Alias#(pipeInT, L1PipeIn#(wayT, cRqIdxT, pRqIdxT)),
     Alias#(pipeCmdT, L1PipeCmd#(wayT, cRqIdxT, pRqIdxT)),
     Alias#(l1CmdT, L1Cmd#(cRqIdxT, pRqIdxT)),
-    Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, dirT, ownerT, Line, l1CmdT)), // output type
+    Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, dirT, ownerT, repT, Line, l1CmdT)), // output type
     Alias#(infoT, CacheInfo#(tagT, Msi, dirT, ownerT)),
-    Alias#(ramDataT, RamData#(tagT, Msi, dirT, ownerT, Line)),
+    Alias#(ramDataT, RamData#(tagT, Msi, dirT, ownerT, repT, Line)),
     Alias#(respStateT, RespState#(Msi)),
     Alias#(tagMatchResT, TagMatchResult#(wayT)),
     Alias#(dataIndexT, Bit#(TAdd#(TLog#(wayNum), indexSz))),
@@ -130,6 +134,7 @@ module mkL1Pipe(
 );
     // RAMs
     Vector#(wayNum, RWBramCore#(indexT, infoT)) infoRam <- replicateM(mkRWBramCore);
+    RWBramCore#(indexT, repT) repRam <- mkRWBramCore;
     RWBramCore#(dataIndexT, Line) dataRam <- mkRWBramCore;
     
     // initialize RAM
@@ -145,14 +150,13 @@ module mkL1Pipe(
                 owner: Invalid
             });
         end
+        repRam.wrReq(initIndex, getLRUInitVal);
+
         initIndex <= initIndex + 1;
         if(initIndex == maxBound) begin
             initDone <= True;
         end
     endrule
-
-    // random replacement
-    RandomReplace#(wayNum) randRep <- mkRandomReplace;
 
     // functions
     function Addr getAddrFromCmd(pipeCmdT cmd);
@@ -173,7 +177,8 @@ module mkL1Pipe(
         pipeCmdT cmd,
         Vector#(wayNum, tagT) tagVec, 
         Vector#(wayNum, Msi) csVec, 
-        Vector#(wayNum, ownerT) ownerVec
+        Vector#(wayNum, ownerT) ownerVec,
+        repT rep
     );
         return actionvalue
             function tagT getTag(Addr a) = truncateLSB(a);
@@ -223,7 +228,7 @@ module mkL1Pipe(
                         invalid[i] = csVec[i] == I;
                         unlocked[i] = !isValid(ownerVec[i]);
                     end
-                    Maybe#(wayT) repWay = randRep.getReplaceWay(unlocked, invalid);
+                    Maybe#(wayT) repWay = getReplaceWay(unlocked, invalid, getLRUWay(rep));
                     // sanity check: repWay must be valid
                     if(!isValid(repWay)) begin
                         $fwrite(stderr, "[L1Pipe] ERROR: ", fshow(cmd), " cannot find way to replace\n");
@@ -257,10 +262,10 @@ module mkL1Pipe(
     endaction
     endfunction
 
-    CCPipe#(wayNum, indexT, tagT, Msi, dirT, ownerT, Line, pipeCmdT) pipe <- mkCCPipe(
+    CCPipe#(wayNum, indexT, tagT, Msi, dirT, ownerT, repT, Line, pipeCmdT) pipe <- mkCCPipe(
         regToReadOnly(initDone), getIndex, tagMatch, updateChildDir, 
         checkUpPRsDataValid, checkDownCRsDataValid,
-        infoRam, dataRam
+        infoRam, repRam, dataRam
     );
 
     method Action send(pipeInT req);

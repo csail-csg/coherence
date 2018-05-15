@@ -41,6 +41,7 @@ typedef Bit#(16) Tag;
 typedef Bit#(2) MsiT;
 typedef Bit#(8) Dir;
 typedef Bit#(4) Owner;
+typedef Bit#(8) Rep;
 typedef Bit#(64) Line;
 typedef Bit#(32) Data;
 

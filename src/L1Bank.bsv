@@ -44,6 +44,7 @@ import Ehr::*;
 import Fifo::*;
 import CacheUtils::*;
 import CrossBar::*;
+import ReplacePolicy::*;
 import Performance::*;
 import LatencyTimer::*;
 
@@ -96,8 +97,9 @@ module mkL1Bank#(
     Alias#(cRqIdxT, Bit#(TLog#(cRqNum))),
     Alias#(pRqIdxT, Bit#(TLog#(pRqNum))),
     Alias#(cacheOwnerT, Maybe#(cRqIdxT)), // actually owner cannot be pRq
+    Alias#(repT, LRURepInfo#(wayNum)),
     Alias#(cacheInfoT, CacheInfo#(tagT, Msi, void, cacheOwnerT)),
-    Alias#(ramDataT, RamData#(tagT, Msi, void, cacheOwnerT, Line)),
+    Alias#(ramDataT, RamData#(tagT, Msi, void, cacheOwnerT, repT, Line)),
     Alias#(procRqT, ProcRq#(procRqIdT)),
     Alias#(cRqToPT, CRqMsg#(wayT, void)),
     Alias#(cRsToPT, CRsMsg#(void)),
@@ -106,7 +108,7 @@ module mkL1Bank#(
     Alias#(pRqRsFromPT, PRqRsMsg#(wayT, void)),
     Alias#(cRqSlotT, L1CRqSlot#(wayT, tagT)), // cRq MSHR slot
     Alias#(l1CmdT, L1Cmd#(cRqIdxT, pRqIdxT)),
-    Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, void, cacheOwnerT, Line, l1CmdT)),
+    Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, void, cacheOwnerT, repT, Line, l1CmdT)),
     // requirements
     Bits#(procRqIdT, _procRqIdT),
     FShow#(procRqIdT),
@@ -408,6 +410,7 @@ module mkL1Bank#(
                 dir: ?,
                 owner: succ
             },
+            rep: updateLRURep(ram.rep, pipeOut.way),
             line: newLine // write new data into cache
         });
         $display("%t L1 %m pipelineResp: Hit func: update ram: ", $time,
@@ -461,6 +464,7 @@ module mkL1Bank#(
                     dir: ?,
                     owner: Valid (n) // owner is req itself
                 },
+                rep: ram.rep,
                 line: ram.line
             });
         endaction
@@ -477,6 +481,7 @@ module mkL1Bank#(
                     dir: ?,
                     owner: Valid (n) // owner is req itself
                 },
+                rep: ram.rep,
                 line: ? // data is no longer used
             });
             // update MSHR: may save replaced line data
@@ -636,6 +641,7 @@ module mkL1Bank#(
                     dir: ?,
                     owner: ram.info.owner // keep owner to cRq
                 },
+                rep: ram.rep,
                 line: ram.line
             });
             rsToPIndexQ.enq(PRq (n));
@@ -666,6 +672,7 @@ module mkL1Bank#(
                     dir: ?,
                     owner: Invalid // no successor
                 },
+                rep: ram.rep,
                 line: ram.line
             });
             rsToPIndexQ.enq(PRq (n));

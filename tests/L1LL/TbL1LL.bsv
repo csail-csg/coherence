@@ -167,7 +167,7 @@ module mkTbL1LL(Empty);
     // randomize req
     // D$
     Vector#(L1DNum, Randomize#(ReqStall)) randDCReqStall <- replicateM(mkGenericRandomizer);
-    Vector#(L1DNum, Randomize#(MemTestOp)) randDCOp <- replicateM(mkConstrainedRandomizer(Ld, Sc));
+    Vector#(L1DNum, Randomize#(MemTestOp)) randDCOp <- replicateM(mkConstrainedRandomizer(Ld, Amo));
     Vector#(L1DNum, Randomize#(LLCTag)) randDCTag <- replicateM(mkConstrainedRandomizer(0, fromInteger(valueOf(TagNum) - 1)));
     Vector#(L1DNum, Randomize#(LLCIndex)) randDCIndex <- replicateM(mkConstrainedRandomizer(0, fromInteger(valueOf(IndexNum) - 1)));
     Vector#(L1DNum, Randomize#(LineDataOffset)) randDCDataSel <- replicateM(mkGenericRandomizer);
@@ -262,6 +262,9 @@ module mkTbL1LL(Empty);
     Reg#(LLCIndex) iterIndex <- mkReg(0);
 
     // stats
+    Vector#(L1DNum, Vector#(L1BankNum, Reg#(Data))) ldCnt <- replicateM(replicateM(mkReg(0)));
+    Vector#(L1DNum, Vector#(L1BankNum, Reg#(Data))) stCnt <- replicateM(replicateM(mkReg(0)));
+    Vector#(L1DNum, Vector#(L1BankNum, Reg#(Data))) amoCnt <- replicateM(replicateM(mkReg(0)));
     Vector#(L1DNum, Vector#(L1BankNum, Reg#(Data))) lrCnt <- replicateM(replicateM(mkReg(0)));
     Vector#(L1DNum, Vector#(L1BankNum, Reg#(Data))) scCnt <- replicateM(replicateM(mkReg(0)));
     Vector#(L1DNum, Vector#(L1BankNum, Reg#(Data))) scSuccCnt <- replicateM(replicateM(mkReg(0)));
@@ -671,6 +674,8 @@ module mkTbL1LL(Empty);
                         $fwrite(stderr, "[TbL1LL] ERROR: D$ %d wrong Ld resp %x\n", i, resp.id);
                         $finish;
                     end
+                    // stats
+                    ldCnt[i][bankId] <= ldCnt[i][bankId] + 1;
                 end
                 else if(req.op == St) begin
                     // store: apply to ref mem
@@ -680,6 +685,8 @@ module mkTbL1LL(Empty);
                     // set addr for clearing others' link
                     wrAddr[i] = Valid (lineAddr);
                     $fwrite(dcRespLog[i], "time %t: resp %x St\n\n", $time, resp.id);
+                    // stats
+                    stCnt[i][bankId] <= stCnt[i][bankId] + 1;
                 end
                 else if(req.op == Lr) begin
                     // load reserve: check value
@@ -762,6 +769,8 @@ module mkTbL1LL(Empty);
                     refMem.writeData(req.addr, newData);
                     // record write addr for clear other link
                     wrAddr[i] = Valid (lineAddr);
+                    // stats
+                    amoCnt[i][bankId] <= amoCnt[i][bankId] + 1;
                 end
                 else begin
                     $fdisplay(stderr, "[TbL1LL] ERROR: D$ %d resp %x unknown op\n", i, resp.id);
@@ -1133,8 +1142,8 @@ module mkTbL1LL(Empty);
         $fdisplay(stderr, "INFO: PASS");
         for(Integer i = 0; i < valueof(L1DNum); i = i+1) begin
             for(Integer j = 0; j < valueof(L1BankNum); j = j+1) begin
-                $fdisplay(stderr, "STATS: D$ %d bank %d: Lr %d, Sc %d, Sc succ %d, Sc fail %d",
-                    i, j, lrCnt[i][j], scCnt[i][j], scSuccCnt[i][j], scFailCnt[i][j]
+                $fdisplay(stderr, "STATS: D$ %d bank %d: Ld %d, St %d, Amo %d, Lr %d, Sc %d, Sc succ %d, Sc fail %d",
+                    i, j, ldCnt[i][j], stCnt[i][j], amoCnt[i][j], lrCnt[i][j], scCnt[i][j], scSuccCnt[i][j], scFailCnt[i][j]
                 );
             end
         end

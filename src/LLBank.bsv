@@ -33,6 +33,10 @@ import FShow::*;
 import DefaultValue::*;
 import Fifo::*;
 import CacheUtils::*;
+import Performance::*;
+import LatencyTimer::*;
+import Cntrs::*;
+import ConfigReg::*;
 
 // we use an infoQ to serialize all req to memory
 // this also ensures that cache pipeline is never blocked
@@ -75,6 +79,9 @@ interface LLBank#(
     interface MemFifoClient#(LdMemRqId#(Bit#(TLog#(cRqNum))), void) to_mem;
     // detect deadlock: only in use when macro CHECK_DEADLOCK is defined
     interface Get#(LLCRqStuck#(childNum, cRqIdT, dmaRqIdT)) cRqStuck;
+    // performance
+    method Action setPerfStatus(Bool stats);
+    method Data getPerfData(LLCPerfType t);
 endinterface
 
 typedef struct {
@@ -196,6 +203,33 @@ module mkLLBank#(
     Fifo#(1, dmaRqIdT) dmaWrHitQ <- mkBypassFifo;
     Fifo#(1, dmaRqIdT) dmaRdMissQ <- mkBypassFifo;
     Fifo#(1, dmaRqIdT) dmaRdHitQ <- mkBypassFifo;
+`endif
+
+    // performance
+`ifdef PERF_COUNT
+    Reg#(Bool) doStats <- mkConfigReg(False);
+    Count#(Data) dmaMemLdCnt <- mkCount(0);
+    Count#(Data) dmaMemLdLat <- mkCount(0);
+    Count#(Data) normalMemLdCnt <- mkCount(0);
+    Count#(Data) normalMemLdLat <- mkCount(0);
+    
+    LatencyTimer#(cRqNum, 10) latTimer <- mkLatencyTimer; // max 1K cycle latency
+
+    function Action incrMissCnt(cRqIndexT idx, Bool isDma);
+    action
+        let lat <- latTimer.done(idx);
+        if(doStats) begin
+            if(isDma) begin
+                dmaMemLdCnt.incr(1);
+                dmaMemLdLat.incr(zeroExtend(lat));
+            end
+            else begin
+                normalMemLdCnt.incr(1);
+                normalMemLdLat.incr(zeroExtend(lat));
+            end
+        end
+    endaction
+    endfunction
 `endif
 
     function tagT getTag(Addr a) = truncateLSB(a);
@@ -384,6 +418,10 @@ module mkLLBank#(
             fshow(cRq), " ; ",
             fshow(cSlot), " ; "
         );
+`ifdef PERF_COUNT
+        // performance counter: normal miss lat and cnt
+        incrMissCnt(n, False);
+`endif
     endrule
 
     // this mem resp is just for a DMA req, won't go into pipeline to refill cache
@@ -394,6 +432,10 @@ module mkLLBank#(
         // save data into cRq mshr & send to DMA resp IndexQ
         cRqMshr.mRsDeq.setData(mRs.id.mshrIdx, Valid (mRs.data));
         rsLdToDmaIndexQ_mRsDeq.enq(mRs.id.mshrIdx);
+`ifdef PERF_COUNT
+        // performance counter: dma miss lat and cnt
+        incrMissCnt(mRs.id.mshrIdx, True);
+`endif
     endrule
 
     // send rd/wr to mem
@@ -430,6 +472,10 @@ module mkLLBank#(
             $display("%t LL %m sendToM: load only: ", $time, fshow(msg));
             doAssert(!isValid(data), "cannot have data");
             doAssert(!doLdAfterReplace, "doLdAfterReplace should be false");
+`ifdef PERF_COUNT
+            // performance counter: start miss timer
+            latTimer.start(n);
+`endif
 `ifdef DEBUG_DMA
             if(cRq.id matches tagged Dma .dmaId) begin
                 dmaRdMissQ.enq(dmaId); // DMA read takes effect
@@ -471,6 +517,10 @@ module mkLLBank#(
                 toMInfoQ.deq;
                 doLdAfterReplace <= False;
                 $display("%t LL %m sendToM: rep then ld: ld: ", $time, fshow(msg));
+`ifdef PERF_COUNT
+                // performance counter: start miss timer
+                latTimer.start(n);
+`endif
             end
             else begin // do write back part
                 toMemT msg = Wb (WbMemRs {
@@ -1293,6 +1343,26 @@ module mkLLBank#(
             };
         endmethod
     endinterface
+
+    method Action setPerfStatus(Bool stats);
+`ifdef PERF_COUNT
+        doStats <= stats;
+`else
+        noAction;
+`endif
+    endmethod 
+
+    method Data getPerfData(LLCPerfType t);
+        return (case(t)
+`ifdef PERF_COUNT
+            LLCDmaMemLdCnt: dmaMemLdCnt;
+            LLCDmaMemLdLat: dmaMemLdLat;
+            LLCNormalMemLdCnt: normalMemLdCnt;
+            LLCNormalMemLdLat: normalMemLdLat;
+`endif
+            default: 0;
+        endcase);
+    endmethod
 endmodule
 
 // Scheduling notes

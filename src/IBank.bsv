@@ -43,6 +43,7 @@ import DefaultValue::*;
 import Fifo::*;
 import CacheUtils::*;
 import Performance::*;
+import LatencyTimer::*;
 
 // L1 I$
 
@@ -81,7 +82,7 @@ interface IBank#(
     interface Get#(IPRqStuck) pRqStuck;
     // performance
     method Action setPerfStatus(Bool stats);
-    method Data getPerfData(L1PerfType t);
+    method Data getPerfData(L1IPerfType t);
 endinterface
 
 module mkIBank#(
@@ -150,6 +151,9 @@ module mkIBank#(
     Reg#(Bool) doStats <- mkConfigReg(False);
     Count#(Data) ldCnt <- mkCount(0);
     Count#(Data) ldMissCnt <- mkCount(0);
+    Count#(Data) ldMissLat <- mkCount(0);
+
+    LatencyTimer#(cRqNum, 10) latTimer <- mkLatencyTimer;
 
     function Action incrReqCnt;
     action
@@ -159,9 +163,11 @@ module mkIBank#(
     endaction
     endfunction
 
-    function Action incrMissCnt;
+    function Action incrMissCnt(cRqIdxT idx);
     action
+        let lat <- latTimer.done(idx);
         if(doStats) begin
+            ldMissLat.incr(zeroExtend(lat));
             ldMissCnt.incr(1);
         end
     endaction
@@ -292,6 +298,10 @@ module mkIBank#(
             fshow(slot), " ; ", 
             fshow(cRqToP)
         );
+`ifdef PERF_COUNT
+        // performance counter: start miss timer
+        latTimer.start(n);
+`endif
     endrule
 
     // last stage of pipeline: process req
@@ -511,7 +521,7 @@ module mkIBank#(
             cRqHit(cOwner, procRq);
 `ifdef PERF_COUNT
             // performance counter: miss cRq
-            incrMissCnt;
+            incrMissCnt(cOwner);
 `endif
         end
         else begin
@@ -626,11 +636,12 @@ module mkIBank#(
 `endif
     endmethod
 
-    method Data getPerfData(L1PerfType t);
+    method Data getPerfData(L1IPerfType t);
         return (case(t)
 `ifdef PERF_COUNT
-            LdCnt: ldCnt;
-            LdMissCnt: ldMissCnt;
+            L1ILdCnt: ldCnt;
+            L1ILdMissCnt: ldMissCnt;
+            L1ILdMissLat: ldMissLat;
 `endif
             default: 0;
         endcase);

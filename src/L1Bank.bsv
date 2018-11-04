@@ -77,12 +77,16 @@ interface L1Bank#(
     // detect deadlock: only in use when macro CHECK_DEADLOCK is defined
     interface Get#(L1CRqStuck) cRqStuck;
     interface Get#(L1PRqStuck) pRqStuck;
+    // security: flush
+    method Action flush;
+    method Bool flush_done;
     // performance
     method Action setPerfStatus(Bool stats);
     method Data getPerfData(L1DPerfType t);
 endinterface
 
 module mkL1Bank#(
+    Bit#(lgBankNum) bankId,
     module#(L1CRqMshr#(cRqNum, wayT, tagT, procRqT)) mkL1CRqMshrLocal,
     module#(L1PRqMshr#(pRqNum)) mkL1PRqMshrLocal,
     module#(L1Pipe#(lgBankNum, wayNum, indexT, tagT, cRqIdxT, pRqIdxT)) mkL1Pipeline,
@@ -105,7 +109,7 @@ module mkL1Bank#(
     Alias#(pRsFromPT, PRsMsg#(wayT, void)),
     Alias#(pRqRsFromPT, PRqRsMsg#(wayT, void)),
     Alias#(cRqSlotT, L1CRqSlot#(wayT, tagT)), // cRq MSHR slot
-    Alias#(l1CmdT, L1Cmd#(cRqIdxT, pRqIdxT)),
+    Alias#(l1CmdT, L1Cmd#(indexT, cRqIdxT, pRqIdxT)),
     Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, void, cacheOwnerT, Line, l1CmdT)),
     // requirements
     Bits#(procRqIdT, _procRqIdT),
@@ -113,7 +117,8 @@ module mkL1Bank#(
     FShow#(pipeOutT),
     Add#(tagSz, a__, AddrSz),
     // make sure: cRqNum <= wayNum
-    Add#(cRqNum, b__, wayNum)
+    Add#(cRqNum, b__, wayNum),
+    Add#(TAdd#(tagSz, indexSz), TAdd#(lgBankNum, LgLineSzBytes), AddrSz)
 );
 
     L1CRqMshr#(cRqNum, wayT, tagT, procRqT) cRqMshr <- mkL1CRqMshrLocal;
@@ -141,6 +146,18 @@ module mkL1Bank#(
 
     // we process AMO resp in a new cycle to cut critical path
     Reg#(Maybe#(Tuple2#(cRqIdxT, procRqT))) processAmo <- mkReg(Invalid);
+
+    // security flush
+`ifdef SECURITY
+    Reg#(Bool) flushDone <- mkConfigReg(True); // prevent scheduling cycle
+    Reg#(Bool) flushReqStart <- mkReg(False);
+    Reg#(Bool) flushReqDone <- mkReg(False);
+    Reg#(Bool) flushRespDone <- mkReg(False);
+    Reg#(indexT) flushIndex <- mkReg(0);
+    Reg#(wayT) flushWay <- mkReg(0);
+`else
+    Bool flushDone = True;
+`endif
 
     // performance
 `ifdef PERF_COUNT
@@ -196,7 +213,8 @@ module mkL1Bank#(
 
     // although D$ may not have cRq at every cycle
     // we still make cRq has lower priorty than pRq/pRs
-    rule cRqTransfer;
+    // we stop accepting cRq when we need to flush for security
+    rule cRqTransfer(flushDone);
         procRqT r <- toGet(rqFromCQ).get;
         cRqIdxT n <- cRqMshr.getEmptyEntryInit(r);
         // send to pipeline
@@ -240,7 +258,46 @@ module mkL1Bank#(
         }));
         $display("%t L1 %m pRsTransfer: ", $time, fshow(resp));
     endrule
-    
+
+`ifdef SECURITY
+    // start flush when cRq MSHR is empty
+    rule startFlushReq(!flushDone && !flushReqStart && cRqMshr.emptyForFlush);
+        flushReqStart <= True;
+    endrule
+
+    (* descending_urgency = "pRsTransfer, flushTransfer" *)
+    (* descending_urgency = "pRqTransfer, flushTransfer" *)
+    rule flushTransfer(!flushDone && flushReqStart && !flushReqDone);
+        // We allocate a pRq MSHR entry for 2 reasons:
+        // (1) reuse the pRq logic to send resp to parent
+        // (2) control the number of downgrade resp to avoid stalling the cache
+        // pipeline
+        pRqIdxT n <- pRqMshr.getEmptyEntryInit(PRqMsg {
+            addr: ?,
+            toState: I,
+            child: ?
+        });
+        pipeline.send(Flush (L1PipeFlushIn {
+            index: flushIndex,
+            way: flushWay,
+            mshrIdx: n
+        }));
+        // increment flush index/way
+        if (flushWay < fromInteger(valueof(wayNum) - 1)) begin
+            flushWay <= flushWay + 1;
+        end
+        else begin
+            flushWay <= 0;
+            flushIndex <= flushIndex + 1; // index num should be power of 2
+            if (flushIndex == maxBound) begin
+                flushReqDone <= True;
+            end
+        end
+        $display("%t L1 %m flushTransfer: ", $time, fshow(n), " ; ",
+                 fshow(flushIndex), " ; ", fshow(flushWay));
+    endrule
+`endif
+
     rule sendRsToP_cRq(rsToPIndexQ.first matches tagged CRq .n);
         rsToPIndexQ.deq;
         // get cRq replacement info
@@ -709,6 +766,65 @@ module mkL1Bank#(
         end
     endrule
 
+`ifdef SECURITY
+    rule pipelineResp_flush(
+        !isValid(processAmo) &&&
+        !flushDone &&& !flushRespDone &&&
+        pipeOut.cmd matches tagged L1Flush .flush
+    );
+        pRqIdxT n = flush.mshrIdx;
+        $display("%t L1 %m pipelineResp: flush: ", $time, fshow(flush));
+
+        // During flush, cRq MSHR is empty, so cache line cannot have owner
+        doAssert(ram.info.owner == Invalid, "flushing line cannot have owner");
+
+        // flush always goes through cache pipeline, and is directly handled
+        // here: either dropped or Done
+        if(ram.info.cs == I) begin
+            $display("%t L1 %m pipelineResp: flush: drop", $time);
+            // flush can be directly dropped
+            pRqMshr.pipelineResp.releaseEntry(n);
+        end
+        else begin
+            $display("%t L1 %m pipelineResp: flush: valid process", $time);
+            pRqMshr.pipelineResp.setDone_setData(n, ram.info.cs == M ? Valid (ram.line) : Invalid);
+            rsToPIndexQ.enq(PRq (n));
+            // record the flushed addr in MSHR so that sendRsToP rule knows
+            // which addr is invalidated
+            Bit#(LgLineSzBytes) offset = 0;
+            Addr addr = {ram.info.tag, flush.index, bankId, offset};
+            pRqMshr.pipelineResp.setFlushAddr(n, addr);
+        end
+
+        // always clear the cache line
+        pipeline.deqWrite(Invalid, RamData {
+            info: CacheInfo {
+                tag: ?,
+                cs: I, // downgraded to I
+                dir: ?,
+                owner: Invalid // no successor
+            },
+            line: ?
+        });
+
+        // always reset link addr
+        linkAddr <= Invalid;
+
+        // check if we have finished all flush
+        if (flush.index == maxBound &&
+            pipeOut.way == fromInteger(valueof(wayNum) - 1)) begin
+            flushRespDone <= True;
+        end
+    endrule
+
+    rule completeFlush(!flushDone && flushReqStart && flushReqDone && flushRespDone);
+        flushDone <= True;
+        flushReqStart <= False;
+        flushReqDone <= False;
+        flushRespDone <= False;
+    endrule
+`endif
+
     // merge rq to parent index into indexQ
     rule rqIndexFromPipelineResp;
         let n <- toGet(rqToPIndexQ_pipelineResp).get;
@@ -751,6 +867,16 @@ module mkL1Bank#(
     endinterface
                 
     interface pRqStuck = pRqMshr.stuck;
+
+`ifdef SECURITY
+    method Action flush if(flushDone);
+        flushDone <= False;
+    endmethod
+    method flush_done = flushDone._read;
+`else
+    method flush = noAction;
+    method flush_done = True;
+`endif
 
     method Action setPerfStatus(Bool stats);
 `ifdef PERF_COUNT
@@ -879,7 +1005,7 @@ module mkL1Cache#(
     Alias#(cRqToPT, CRqMsg#(wayT, void)),
     Alias#(cRsToPT, CRsMsg#(void)),
     Alias#(pRqRsFromPT, PRqRsMsg#(wayT, void)),
-    Alias#(l1CmdT, L1Cmd#(cRqIdxT, pRqIdxT)),
+    Alias#(l1CmdT, L1Cmd#(indexT, cRqIdxT, pRqIdxT)),
     Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, void, cacheOwnerT, Line, l1CmdT)),
     // requirements
     Bits#(procRqIdT, _procRqIdT),
@@ -889,13 +1015,15 @@ module mkL1Cache#(
     // make sure: cRqNum <= wayNum
     Add#(cRqNum, b__, wayNum),
     Add#(lgBankNum, c__, AddrSz),
-    Add#(1, d__, bankNum)
+    Add#(1, d__, bankNum),
+    Add#(TAdd#(tagSz, indexSz), TAdd#(lgBankNum, LgLineSzBytes), AddrSz)
 );
     // bank id of each cache bank is implicit, we always send fixed subset of address to a bank
     // the pipelineResp_cRq,pRs will conflict with each other
-    Vector#(bankNum, l1BankT) banks <- replicateM(
-        mkL1Bank(mkL1CRqMshrLocal, mkL1PRqMshrLocal, mkL1Pipeline, procResp)
-    );
+    Vector#(bankNum, l1BankT) banks;
+    for (Integer i = 0; i < valueof(bankNum); i = i+1) begin
+        banks[i] <- mkL1Bank(fromInteger(i), mkL1CRqMshrLocal, mkL1PRqMshrLocal, mkL1Pipeline, procResp);
+    end
 
     function bankIdT getBankId(Addr a);
         return truncate(a >> valueof(LgLineSzBytes));
@@ -976,6 +1104,20 @@ module mkL1Cache#(
         for(Integer i = 0; i < valueof(bankNum); i = i+1) begin
             banks[i].resetLinkAddr;
         end
+    endmethod
+
+    method Action flush;
+        for(Integer i = 0; i < valueof(bankNum); i = i+1) begin
+            banks[i].flush;
+        end
+    endmethod
+
+    method Bool flush_done;
+        Vector#(bankNum, Bool) b;
+        for(Integer i = 0; i < valueof(bankNum); i = i+1) begin
+            b[i] = banks[i].flush_done;
+        end
+        return fold(\&& , b);
     endmethod
 
     method Action setPerfStatus(Bool stats);

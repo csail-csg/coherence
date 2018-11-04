@@ -48,22 +48,45 @@ typedef struct {
     wayT way;
 } L1PipePRsIn#(type wayT) deriving(Bits, Eq, FShow);
 
+typedef struct {
+    indexT index;
+    wayT way;
+    pRqIdxT mshrIdx;
+} L1PipeFlushIn#(
+    type wayT,
+    type indexT,
+    type pRqIdxT
+) deriving(Bits, Eq, FShow);
+
 typedef union tagged {
     L1PipeRqIn#(cRqIdxT) CRq;
     L1PipeRqIn#(pRqIdxT) PRq;
     L1PipePRsIn#(wayT) PRs;
+`ifdef SECURITY
+    L1PipeFlushIn#(wayT, indexT, pRqIdxT) Flush;
+`endif
 } L1PipeIn#(
     type wayT,
+    type indexT,
     type cRqIdxT, 
     type pRqIdxT
 ) deriving (Bits, Eq, FShow);
 
 // output cmd to the processing rule in L1$
+typedef struct {
+    indexT index;
+    pRqIdxT mshrIdx;
+} L1FlushCmd#(type indexT, type pRqIdxT) deriving(Bits, Eq, FShow);
+
 typedef union tagged {
     cRqIdxT L1CRq;
     pRqIdxT L1PRq;
     void L1PRs;
+`ifdef SECURITY
+    L1FlushCmd#(indexT, pRqIdxT) L1Flush;
+`endif
 } L1Cmd#(
+    type indexT,
     type cRqIdxT, 
     type pRqIdxT
 ) deriving (Bits, Eq, FShow);
@@ -76,12 +99,12 @@ interface L1Pipe#(
     type cRqIdxT, 
     type pRqIdxT
 );
-    method Action send(L1PipeIn#(Bit#(TLog#(wayNum)), cRqIdxT, pRqIdxT) r);
+    method Action send(L1PipeIn#(Bit#(TLog#(wayNum)), indexT, cRqIdxT, pRqIdxT) r);
     method PipeOut#(
         Bit#(TLog#(wayNum)), 
         tagT, Msi, void, // no dir
         Maybe#(cRqIdxT),
-        Line, L1Cmd#(cRqIdxT, pRqIdxT)
+        Line, L1Cmd#(indexT, cRqIdxT, pRqIdxT)
     ) first;
     method Action deqWrite(
         Maybe#(cRqIdxT) swapRq,
@@ -99,8 +122,12 @@ typedef union tagged {
     L1PipeRqIn#(cRqIdxT) CRq;
     L1PipeRqIn#(pRqIdxT) PRq;
     L1PipePRsCmd#(wayT) PRs;
+`ifdef SECURITY
+    L1PipeFlushIn#(wayT, indexT, pRqIdxT) Flush;
+`endif
 } L1PipeCmd#(
     type wayT,
+    type indexT,
     type cRqIdxT, 
     type pRqIdxT
 ) deriving (Bits, Eq, FShow);
@@ -111,9 +138,9 @@ module mkL1Pipe(
     Alias#(wayT, Bit#(TLog#(wayNum))),
     Alias#(dirT, void), // no directory
     Alias#(ownerT, Maybe#(cRqIdxT)),
-    Alias#(pipeInT, L1PipeIn#(wayT, cRqIdxT, pRqIdxT)),
-    Alias#(pipeCmdT, L1PipeCmd#(wayT, cRqIdxT, pRqIdxT)),
-    Alias#(l1CmdT, L1Cmd#(cRqIdxT, pRqIdxT)),
+    Alias#(pipeInT, L1PipeIn#(wayT, indexT, cRqIdxT, pRqIdxT)),
+    Alias#(pipeCmdT, L1PipeCmd#(wayT, indexT, cRqIdxT, pRqIdxT)),
+    Alias#(l1CmdT, L1Cmd#(indexT, cRqIdxT, pRqIdxT)),
     Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, dirT, ownerT, Line, l1CmdT)), // output type
     Alias#(infoT, CacheInfo#(tagT, Msi, dirT, ownerT)),
     Alias#(ramDataT, RamData#(tagT, Msi, dirT, ownerT, Line)),
@@ -160,6 +187,10 @@ module mkL1Pipe(
             tagged CRq .r: r.addr;
             tagged PRq .r: r.addr;
             tagged PRs .r: r.addr;
+`ifdef SECURITY
+            // fake an address for flush req that has the same index
+            tagged Flush .r: (zeroExtend(r.index) << (valueOf(LgLineSzBytes) + valueOf(lgBankNum)));
+`endif
             default: ?;
         endcase);
     endfunction
@@ -192,6 +223,15 @@ module mkL1Pipe(
                     pRqMiss: False
                 };
             end
+`ifdef SECURITY
+            else if(cmd matches tagged Flush .flush) begin
+                // flush directly read from cmd
+                return TagMatchResult {
+                    way: flush.way,
+                    pRqMiss: False
+                };
+            end
+`endif
             else begin
                 // CRq/PRq: need tag matching
                 Addr addr = getAddrFromCmd(cmd);
@@ -277,6 +317,11 @@ module mkL1Pipe(
                     way: rs.way
                 }), rs.data, UpCs (rs.toState));
             end
+`ifdef SECURITY
+            tagged Flush .flush: begin
+                pipe.enq(Flush (flush), Invalid, Invalid);
+            end
+`endif
         endcase
     endmethod
 
@@ -288,6 +333,12 @@ module mkL1Pipe(
                 tagged CRq .rq: L1CRq (rq.mshrIdx);
                 tagged PRq .rq: L1PRq (rq.mshrIdx);
                 tagged PRs .rs: L1PRs;
+`ifdef SECURITY
+                tagged Flush .flush: L1Flush (L1FlushCmd {
+                    index: flush.index,
+                    mshrIdx: flush.mshrIdx
+                });
+`endif
                 default: ?;
             endcase),
             way: pout.way,
@@ -298,10 +349,14 @@ module mkL1Pipe(
 
     method Action deqWrite(Maybe#(cRqIdxT) swapRq, ramDataT wrRam);
         // get new cmd
-        Addr addr = getAddrFromCmd(pipe.first.cmd); // inherit addr
         Maybe#(pipeCmdT) newCmd = Invalid;
         if(swapRq matches tagged Valid .idx) begin // swap in cRq
+            Addr addr = getAddrFromCmd(pipe.first.cmd); // inherit addr
             newCmd = Valid (CRq (L1PipeRqIn {addr: addr, mshrIdx: idx}));
+`ifdef SECURITY
+            doAssert(pipe.first.cmd matches tagged Flush .f ? False : True,
+                     "Cannot swap after a flush req");
+`endif
         end
         // call pipe
         pipe.deqWrite(newCmd, wrRam);

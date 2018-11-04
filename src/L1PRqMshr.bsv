@@ -30,6 +30,7 @@ import Types::*;
 import CCTypes::*;
 import DefaultValue::*;
 import Ehr::*;
+import Fifo::*;
 import MshrDeadlockChecker::*;
 
 // MSHR dependency chain invariant:
@@ -63,6 +64,9 @@ interface L1PRqMshr_pipelineResp#(numeric type pRqNum);
 
     method Action releaseEntry(Bit#(TLog#(pRqNum)) n);
     method Action setDone_setData(Bit#(TLog#(pRqNum)) n, Maybe#(Line) d);
+`ifdef SECURITY
+    method Action setFlushAddr(Bit#(TLog#(pRqNum)) n, Addr a);
+`endif
 endinterface
 
 interface L1PRqMshr#(numeric type pRqNum);
@@ -109,8 +113,8 @@ module mkL1PRqMshrSafe(
     Reg#(pRqIndexT) initIdx <- mkReg(0);
 
     // released entry index fifos
-    FIFO#(pRqIndexT) releaseEntryQ_sendRsToP_pRq <- mkFIFO;
-    FIFO#(pRqIndexT) releaseEntryQ_pipelineResp <- mkFIFO;
+    Fifo#(1, pRqIndexT) releaseEntryQ_sendRsToP_pRq <- mkBypassFifo;
+    Fifo#(1, pRqIndexT) releaseEntryQ_pipelineResp  <- mkBypassFifo;
 
     rule initEmptyEntry(!inited);
         emptyEntryQ.enq(initIdx);
@@ -201,6 +205,16 @@ module mkL1PRqMshrSafe(
             releaseEntryQ_pipelineResp.enq(n);
             stateVec[n][pipelineResp_port] <= Empty;
         endmethod
+
+`ifdef SECURITY
+        method Action setFlushAddr(Bit#(TLog#(pRqNum)) n, Addr a);
+            reqVec[n][pipelineResp_port] <= PRqMsg {
+                addr: a,
+                toState: I,
+                child: ?
+            };
+        endmethod
+`endif
     endinterface
 
 `ifdef CHECK_DEADLOCK

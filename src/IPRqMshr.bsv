@@ -31,6 +31,7 @@ import Types::*;
 import CCTypes::*;
 import DefaultValue::*;
 import Ehr::*;
+import Fifo::*;
 import MshrDeadlockChecker::*;
 
 // MSHR dependency chain invariant:
@@ -102,8 +103,8 @@ module mkIPRqMshrSafe(
     Reg#(pRqIndexT) initIdx <- mkReg(0);
 
     // released entry index fifos
-    FIFO#(pRqIndexT) releaseEntryQ_sendRsToP_pRq <- mkFIFO;
-    FIFO#(pRqIndexT) releaseEntryQ_pipelineResp <- mkFIFO;
+    Fifo#(1, pRqIndexT) releaseEntryQ_sendRsToP_pRq <- mkBypassFifo;
+    Fifo#(1, pRqIndexT) releaseEntryQ_pipelineResp  <- mkBypassFifo;
 
     rule initEmptyEntry(!inited);
         emptyEntryQ.enq(initIdx);

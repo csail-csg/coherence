@@ -107,7 +107,7 @@ module mkIBank#(
     Alias#(pRsFromPT, PRsMsg#(wayT, void)),
     Alias#(pRqRsFromPT, PRqRsMsg#(wayT, void)),
     Alias#(cRqSlotT, ICRqSlot#(wayT, tagT)), // cRq MSHR slot
-    Alias#(l1CmdT, L1Cmd#(cRqIdxT, pRqIdxT)),
+    Alias#(l1CmdT, L1Cmd#(indexT, cRqIdxT, pRqIdxT)),
     Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, void, cacheOwnerT, Line, l1CmdT)),
     Alias#(resultT, Vector#(supSz, Maybe#(Instruction))),
     // requirements

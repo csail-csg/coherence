@@ -153,6 +153,9 @@ interface L1CRqMshr#(
     // port for pipelineResp
     interface L1CRqMshr_pipelineResp#(cRqNum, wayT, tagT, reqT) pipelineResp;
 
+    // port for security flush
+    method Bool emptyForFlush;
+
     // detect deadlock: only in use when macro CHECK_DEADLOCK is defined
     interface Get#(L1CRqMshrStuck#(reqT)) stuck;
 endinterface
@@ -174,6 +177,7 @@ module mkL1CRqMshrSafe#(
 );
     // EHR ports
     // We put pipelineResp < transfer to cater for deq < enq of cache pipeline
+    Integer flush_port = 0; // flush port is read only
     Integer sendRqToP_port = 0; // sendRqToP is read only
     Integer sendRsToP_cRq_port = 0;
     Integer pipelineResp_port = 1;
@@ -330,6 +334,12 @@ module mkL1CRqMshrSafe#(
             return searchIndex(isEndOfChain, idxVec);
         endmethod
     endinterface
+
+    method Bool emptyForFlush;
+        function Bool isEmpty(Integer i) = stateVec[i][flush_port] == Empty;
+        Vector#(cRqNum, Integer) idxVec = genVector;
+        return all(isEmpty, idxVec);
+    endmethod
 
 `ifdef CHECK_DEADLOCK
     interface stuck = toGet(stuckQ);

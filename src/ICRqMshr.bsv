@@ -152,6 +152,9 @@ interface ICRqMshr#(
     // port for pipelineResp
     interface ICRqMshr_pipelineResp#(cRqNum, wayT, tagT, reqT, resultT) pipelineResp;
 
+    // port for security flush
+    method Bool emptyForFlush;
+
     // detect deadlock: only in use when macro CHECK_DEADLOCK is defined
     interface Get#(ICRqMshrStuck#(reqT)) stuck;
 endinterface
@@ -179,6 +182,7 @@ module mkICRqMshrSafe#(
     Integer pipelineResp_port = 0;
     Integer sendRqToP_port = 0; // sendRqToP is read only
     Integer sendRsToP_cRq_port = 0; // sendRsToP_cRq is read only
+    Integer flush_port = 0; // flush port is read only
 
     // MSHR entry state
     Vector#(cRqNum, Ehr#(3, ICRqState)) stateVec <- replicateM(mkEhr(Empty));
@@ -319,6 +323,12 @@ module mkICRqMshrSafe#(
             return searchIndex(isEndOfChain, idxVec);
         endmethod
     endinterface
+
+    method Bool emptyForFlush;
+        function Bool isEmpty(Integer i) = stateVec[i][flush_port] == Empty;
+        Vector#(cRqNum, Integer) idxVec = genVector;
+        return all(isEmpty, idxVec);
+    endmethod
 
 `ifdef CHECK_DEADLOCK
     interface stuck = toGet(stuckQ);

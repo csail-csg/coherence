@@ -61,6 +61,9 @@ interface IPRqMshr_pipelineResp#(numeric type pRqNum);
     method PRqMsg#(void) getRq(Bit#(TLog#(pRqNum)) n);
     method Action releaseEntry(Bit#(TLog#(pRqNum)) n);
     method Action setDone(Bit#(TLog#(pRqNum)) n);
+`ifdef SECURITY
+    method Action setFlushAddr(Bit#(TLog#(pRqNum)) n, Addr a);
+`endif
 endinterface
 
 interface IPRqMshr#(numeric type pRqNum);
@@ -184,6 +187,16 @@ module mkIPRqMshrSafe(
             releaseEntryQ_pipelineResp.enq(n);
             stateVec[n][pipelineResp_port] <= Empty;
         endmethod
+
+`ifdef SECURITY
+        method Action setFlushAddr(Bit#(TLog#(pRqNum)) n, Addr a);
+            reqVec[n][pipelineResp_port] <= PRqMsg {
+                addr: a,
+                toState: I,
+                child: ?
+            };
+        endmethod
+`endif
     endinterface
 
 `ifdef CHECK_DEADLOCK

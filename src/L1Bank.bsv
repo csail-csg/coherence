@@ -149,7 +149,7 @@ module mkL1Bank#(
 
     // security flush
 `ifdef SECURITY
-    Reg#(Bool) flushDone <- mkConfigReg(True); // prevent scheduling cycle
+    Reg#(Bool) flushDone <- mkReg(True);
     Reg#(Bool) flushReqStart <- mkReg(False);
     Reg#(Bool) flushReqDone <- mkReg(False);
     Reg#(Bool) flushRespDone <- mkReg(False);

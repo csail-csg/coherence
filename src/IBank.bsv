@@ -80,12 +80,16 @@ interface IBank#(
     // detect deadlock: only in use when macro CHECK_DEADLOCK is defined
     interface Get#(ICRqStuck) cRqStuck;
     interface Get#(IPRqStuck) pRqStuck;
+    // security: flush
+    method Action flush;
+    method Bool flush_done;
     // performance
     method Action setPerfStatus(Bool stats);
     method Data getPerfData(L1IPerfType t);
 endinterface
 
 module mkIBank#(
+    Bit#(lgBankNum) bankId,
     module#(ICRqMshr#(cRqNum, wayT, tagT, procRqT, resultT)) mkICRqMshrLocal,
     module#(IPRqMshr#(pRqNum)) mkIPRqMshrLocal,
     module#(L1Pipe#(lgBankNum, wayNum, indexT, tagT, cRqIdxT, pRqIdxT)) mkL1Pipeline
@@ -114,7 +118,8 @@ module mkIBank#(
     FShow#(pipeOutT),
     Add#(tagSz, a__, AddrSz),
     // make sure: cRqNum <= wayNum
-    Add#(cRqNum, b__, wayNum)
+    Add#(cRqNum, b__, wayNum),
+    Add#(TAdd#(tagSz, indexSz), TAdd#(lgBankNum, LgLineSzBytes), AddrSz)
 );
 
     ICRqMshr#(cRqNum, wayT, tagT, procRqT, resultT) cRqMshr <- mkICRqMshrLocal;
@@ -145,6 +150,18 @@ module mkIBank#(
     // FIFO to signal the id of cRq that is performed
     // FIFO has 0 cycle latency to match L1 D$ resp latency
     Fifo#(1, Bit#(64)) cRqDoneQ <- mkBypassFifo; 
+`endif
+
+    // security flush
+`ifdef SECURITY
+    Reg#(Bool) flushDone <- mkReg(True);
+    Reg#(Bool) flushReqStart <- mkReg(False);
+    Reg#(Bool) flushReqDone <- mkReg(False);
+    Reg#(Bool) flushRespDone <- mkReg(False);
+    Reg#(indexT) flushIndex <- mkReg(0);
+    Reg#(wayT) flushWay <- mkReg(0);
+`else
+    Bool flushDone = True;
 `endif
 
 `ifdef PERF_COUNT
@@ -179,7 +196,8 @@ module mkIBank#(
     // XXX since I$ may be requested by processor constantly
     // cRq may come at every cycle, so we must make cRq has lower priority than pRq/pRs
     // otherwise the whole system may deadlock/livelock
-    rule cRqTransfer;
+    // we stop accepting cRq when we need to flush for security
+    rule cRqTransfer(flushDone);
         Addr addr <- toGet(rqFromCQ).get;
 `ifdef DEBUG_ICACHE
         procRqT r = ProcRqToI {addr: addr, id: cRqId};
@@ -235,6 +253,45 @@ module mkIBank#(
         doAssert(resp.toState == S && isValid(resp.data), "I$ must upgrade to S with data");
     endrule
     
+`ifdef SECURITY
+    // start flush when cRq MSHR is empty
+    rule startFlushReq(!flushDone && !flushReqStart && cRqMshr.emptyForFlush);
+        flushReqStart <= True;
+    endrule
+
+    (* descending_urgency = "pRsTransfer, flushTransfer" *)
+    (* descending_urgency = "pRqTransfer, flushTransfer" *)
+    rule flushTransfer(!flushDone && flushReqStart && !flushReqDone);
+        // We allocate a pRq MSHR entry for 2 reasons:
+        // (1) reuse the pRq logic to send resp to parent
+        // (2) control the number of downgrade resp to avoid stalling the cache
+        // pipeline
+        pRqIdxT n <- pRqMshr.getEmptyEntryInit(PRqMsg {
+            addr: ?,
+            toState: I,
+            child: ?
+        });
+        pipeline.send(Flush (L1PipeFlushIn {
+            index: flushIndex,
+            way: flushWay,
+            mshrIdx: n
+        }));
+        // increment flush index/way
+        if (flushWay < fromInteger(valueof(wayNum) - 1)) begin
+            flushWay <= flushWay + 1;
+        end
+        else begin
+            flushWay <= 0;
+            flushIndex <= flushIndex + 1; // index num should be power of 2
+            if (flushIndex == maxBound) begin
+                flushReqDone <= True;
+            end
+        end
+        $display("%t I %m flushTransfer: ", $time, fshow(n), " ; ",
+                 fshow(flushIndex), " ; ", fshow(flushWay));
+    endrule
+`endif
+
     rule sendRsToP_cRq(rsToPIndexQ.first matches tagged CRq .n);
         rsToPIndexQ.deq;
         // get cRq replacement info
@@ -573,6 +630,61 @@ module mkIBank#(
         end
     endrule
 
+`ifdef SECURITY
+    rule pipelineResp_flush(
+        !flushDone &&& !flushRespDone &&&
+        pipeOut.cmd matches tagged L1Flush .flush
+    );
+        pRqIdxT n = flush.mshrIdx;
+        $display("%t I %m pipelineResp: flush: ", $time, fshow(flush));
+
+        // During flush, cRq MSHR is empty, so cache line cannot have owner
+        doAssert(ram.info.owner == Invalid, "flushing line cannot have owner");
+
+        // flush always goes through cache pipeline, and is directly handled
+        // here: either dropped or Done
+        if(ram.info.cs == I) begin
+            $display("%t I %m pipelineResp: flush: drop", $time);
+            // flush can be directly dropped
+            pRqMshr.pipelineResp.releaseEntry(n);
+        end
+        else begin
+            $display("%t I %m pipelineResp: flush: valid process", $time);
+            pRqMshr.pipelineResp.setDone(n);
+            rsToPIndexQ.enq(PRq (n));
+            // record the flushed addr in MSHR so that sendRsToP rule knows
+            // which addr is invalidated
+            Bit#(LgLineSzBytes) offset = 0;
+            Addr addr = {ram.info.tag, flush.index, bankId, offset};
+            pRqMshr.pipelineResp.setFlushAddr(n, addr);
+        end
+
+        // always clear the cache line
+        pipeline.deqWrite(Invalid, RamData {
+            info: CacheInfo {
+                tag: ?,
+                cs: I, // downgraded to I
+                dir: ?,
+                owner: Invalid // no successor
+            },
+            line: ?
+        });
+
+        // check if we have finished all flush
+        if (flush.index == maxBound &&
+            pipeOut.way == fromInteger(valueof(wayNum) - 1)) begin
+            flushRespDone <= True;
+        end
+    endrule
+
+    rule completeFlush(!flushDone && flushReqStart && flushReqDone && flushRespDone);
+        flushDone <= True;
+        flushReqStart <= False;
+        flushReqDone <= False;
+        flushRespDone <= False;
+    endrule
+`endif
+
     // merge rq to parent index into indexQ
     rule rqIndexFromPipelineResp;
         let n <- toGet(rqToPIndexQ_pipelineResp).get;
@@ -627,6 +739,16 @@ module mkIBank#(
     endinterface
                 
     interface pRqStuck = pRqMshr.stuck;
+
+`ifdef SECURITY
+    method Action flush if(flushDone);
+        flushDone <= False;
+    endmethod
+    method flush_done = flushDone._read;
+`else
+    method flush = noAction;
+    method flush_done = True;
+`endif
 
     method Action setPerfStatus(Bool stats);
 `ifdef PERF_COUNT

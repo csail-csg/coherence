@@ -62,6 +62,6 @@ typedef IBank#(L1ISupSz, LgIBankNum, L1WayNum, IIndexSz, ITagSz, L1CRqNum, L1PRq
 
 (* synthesize *)
 module mkIBankWrapper(IBankWrapper);
-    let m <- mkIBank(mkICRqMshrWrapper, mkIPRqMshrWrapper, mkIPipeline);
+    let m <- mkIBank(0, mkICRqMshrWrapper, mkIPRqMshrWrapper, mkIPipeline);
     return m;
 endmodule

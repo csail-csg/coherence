@@ -30,6 +30,7 @@ import Types::*;
 import CCTypes::*;
 import DefaultValue::*;
 import Ehr::*;
+import Fifo::*;
 import MshrDeadlockChecker::*;
 
 // MSHR dependency chain invariant:
@@ -85,6 +86,10 @@ interface LLCRqMshr_transfer#(
     method reqT getRq(Bit#(TLog#(cRqNum)) n);
     method LLCRqSlot#(childNum, wayT, tagT) getSlot(Bit#(TLog#(cRqNum)) n);
     method ActionValue#(Bit#(TLog#(cRqNum))) getEmptyEntryInit(reqT r, Maybe#(Line) d);
+    // check if any empty MSHR entry is available in order to get MSHR blocking
+    // stats. The argument is not really used here, just in case some other
+    // MSHR implementations may bank entries based on addr.
+    method Bool hasEmptyEntry(reqT r);
 endinterface
 
 // interface for mRsDeq
@@ -226,7 +231,7 @@ module mkLLCRqMshrSafe#(
     RegFile#(cRqIndexT, cRqIndexT) addrSuccFile <- mkRegFile(0, fromInteger(valueOf(cRqNum) - 1));
     RegFile#(cRqIndexT, cRqIndexT) repSuccFile <- mkRegFile(0, fromInteger(valueOf(cRqNum) - 1));
     // empty entry FIFO
-    FIFO#(cRqIndexT) emptyEntryQ <- mkSizedFIFO(valueOf(cRqNum));
+    Fifo#(cRqNum, cRqIndexT) emptyEntryQ <- mkCFFifo;
 
     // empty entry FIFO needs initialization
     Reg#(Bool) inited <- mkReg(False);
@@ -290,6 +295,10 @@ module mkLLCRqMshrSafe#(
             checker.initEntry(n);
 `endif
             return n;
+        endmethod
+
+        method Bool hasEmptyEntry(reqT r);
+            return emptyEntryQ.notEmpty;
         endmethod
     endinterface
 

@@ -212,6 +212,7 @@ module mkLLBank#(
     Count#(Data) dmaMemLdLat <- mkCount(0);
     Count#(Data) normalMemLdCnt <- mkCount(0);
     Count#(Data) normalMemLdLat <- mkCount(0);
+    Count#(Data) mshrBlocks <- mkCount(0);
     
     LatencyTimer#(cRqNum, 10) latTimer <- mkLatencyTimer; // max 1K cycle latency
 
@@ -357,6 +358,26 @@ module mkLLBank#(
         );
     endrule
 
+`ifdef PERF_COUNT
+    // perf stats: insert new cRq fails because of full MSHR
+    rule cRqTransfer_new_child_block(
+        !cRqRetryIndexQ.notEmpty && newCRqSrc == Valid (Child) && doStats
+    );
+        cRqFromCT r = rqFromCQ.first;
+        cRqT cRq = LLRq {
+            addr: r.addr,
+            fromState: r.fromState,
+            toState: r.toState,
+            child: r.child,
+            byteEn: ?,
+            id: Child (r.id)
+        };
+        if(!cRqMshr.transfer.hasEmptyEntry(cRq)) begin
+            mshrBlocks.incr(1);
+        end
+    endrule
+`endif
+
     // insert new cRq from DMA to MSHR and send to pipeline
     rule cRqTransfer_new_dma(!cRqRetryIndexQ.notEmpty && newCRqSrc == Valid (Dma));
         rqFromDmaQ.deq;
@@ -386,6 +407,27 @@ module mkLLBank#(
         );
     endrule
 
+`ifdef PERF_COUNT
+    // perf stats: insert new cRq fails because of full MSHR
+    rule cRqTransfer_new_dma_block(
+        !cRqRetryIndexQ.notEmpty && newCRqSrc == Valid (Dma) && doStats
+    );
+        dmaRqT r = rqFromDmaQ.first;
+        Bool write = r.byteEn != replicate(False);
+        cRqT cRq = LLRq {
+            addr: r.addr,
+            fromState: I,
+            toState: write ? M : S,
+            child: ?,
+            byteEn: r.byteEn,
+            id: Dma (r.id)
+        };
+        if(!cRqMshr.transfer.hasEmptyEntry(cRq)) begin
+            mshrBlocks.incr(1);
+        end
+    endrule
+`endif
+
     // send downgrade resp from child to pipeline
     rule cRsTransfer;
         rsFromCQ.deq;
@@ -396,6 +438,14 @@ module mkLLBank#(
     
     // mem resp for child req, will refill cache, send it to pipeline
     (* descending_urgency = "mRsTransfer, cRsTransfer, cRqTransfer_retry, cRqTransfer_new_child, cRqTransfer_new_dma" *)
+`ifdef PERF_COUNT
+    // stop mshr block stats when other higher priority req is being sent to
+    // pipeline
+    (* preempts = "mRsTransfer, cRqTransfer_new_child_block" *)
+    (* preempts = "mRsTransfer, cRqTransfer_new_dma_block" *)
+    (* preempts = "cRsTransfer, cRqTransfer_new_child_block" *)
+    (* preempts = "cRsTransfer, cRqTransfer_new_dma_block" *)
+`endif
     rule mRsTransfer(rsFromMQ.first.id.refill);
         // get mem resp cRq index & data
         rsFromMQ.deq;
@@ -1359,6 +1409,7 @@ module mkLLBank#(
             LLCDmaMemLdLat: dmaMemLdLat;
             LLCNormalMemLdCnt: normalMemLdCnt;
             LLCNormalMemLdLat: normalMemLdLat;
+            LLCMshrBlockCycles: mshrBlocks;
 `endif
             default: 0;
         endcase);

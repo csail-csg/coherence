@@ -23,6 +23,7 @@
 
 import Vector::*;
 import GetPut::*;
+import Connectable::*;
 import CacheUtils::*;
 import CCTypes::*;
 import Types::*;
@@ -134,10 +135,56 @@ module mkXBar#(
     end
 endmodule
 
+// XBar with latency added at src or dst (mainly for model timing)
+interface XBarDelay#(numeric type srcLat, numeric type dstLat);
+endinterface
+
+module mkXBarDelay#(
+    function XBarDstInfo#(dstIdxT, dstDataT) getDstInfo(srcIdxT idx, srcDataT data),
+    Vector#(srcNum, Get#(srcDataT)) srcIfc,
+    Vector#(dstNum, Put#(dstDataT)) dstIfc
+)(XBarDelay#(srcLat, dstLat)) provisos(
+    Alias#(srcIdxT, Bit#(TLog#(srcNum))),
+    Alias#(dstIdxT, Bit#(TLog#(dstNum))),
+    Bits#(srcDataT, _srcDataSz),
+    Bits#(dstDataT, _dstDataSz),
+    FShow#(dstDataT)
+);
+    // Add latency at src side
+    Vector#(srcNum, Get#(srcDataT)) src = srcIfc;
+    if(valueof(srcLat) > 0) begin
+        for(Integer i = 0; i < valueof(srcNum); i = i+1) begin
+            Vector#(srcLat, Fifo#(2, srcDataT)) delayQ <- replicateM(mkCFFifo);
+            mkConnection(srcIfc[i], toPut(delayQ[0]));
+            for(Integer j = 0; j < valueof(srcLat) - 1; j = j+1) begin
+                mkConnection(toGet(delayQ[j]), toPut(delayQ[j + 1]));
+            end
+            src[i] = toGet(delayQ[valueof(srcLat) - 1]);
+        end
+    end
+
+    // Add latency at dst side
+    Vector#(dstNum, Put#(dstDataT)) dst = dstIfc;
+    if(valueof(dstLat) > 0) begin
+        for(Integer i = 0; i < valueof(dstNum); i = i+1) begin
+            Vector#(dstLat, Fifo#(2, dstDataT)) delayQ <- replicateM(mkCFFifo);
+            mkConnection(toGet(delayQ[0]), dstIfc[i]);
+            for(Integer j = 0; j < valueof(dstLat) - 1; j = j+1) begin
+                mkConnection(toGet(delayQ[j + 1]), toPut(delayQ[j]));
+            end
+            dst[i] = toPut(delayQ[valueof(dstLat) - 1]);
+        end
+    end
+
+    mkXBar(getDstInfo, src, dst);
+endmodule
+
 interface CrossBar#(
     numeric type srcNum,
+    numeric type srcLat,
     type srcDataT,
     numeric type dstNum,
+    numeric type dstLat,
     type dstDataT
 );
     interface Vector#(srcNum, FifoEnq#(srcDataT)) srcIfc;
@@ -147,7 +194,7 @@ endinterface
 module mkCrossBar#(
     function XBarDstInfo#(dstIdxT, dstDataT) getDstInfo(srcIdxT idx, srcDataT data)
 )(
-    CrossBar#(srcNum, srcDataT, dstNum, dstDataT)
+    CrossBar#(srcNum, srcLat, srcDataT, dstNum, dstLat, dstDataT)
 ) provisos(
     Alias#(srcIdxT, Bit#(TLog#(srcNum))),
     Alias#(dstIdxT, Bit#(TLog#(dstNum))),
@@ -160,148 +207,9 @@ module mkCrossBar#(
     Vector#(srcNum, Fifo#(2, srcDataT)) srcQ <- replicateM(mkCFFifo);
     Vector#(dstNum, Fifo#(2, dstDataT)) dstQ <- replicateM(mkCFFifo);
 
-    mkXBar(getDstInfo, map(toGet, srcQ), map(toPut, dstQ));
+    XBarDelay#(srcLat, dstLat) xbar <- mkXBarDelay(getDstInfo, map(toGet, srcQ), map(toPut, dstQ));
 
     interface srcIfc = map(toFifoEnq, srcQ);
     interface dstIfc = map(toFifoDeq, dstQ);
 endmodule
 
-/*
-module mkCrossBar#(
-    function XBarDstInfo#(dstIdxT, dstDataT) getDstInfo(srcIdxT idx, srcDataT data)
-)(
-    CrossBar#(srcNum, srcDataT, dstNum, dstDataT)
-) provisos(
-    Alias#(srcIdxT, Bit#(TLog#(srcNum))),
-    Alias#(dstIdxT, Bit#(TLog#(dstNum))),
-    Bits#(srcDataT, _srcDataSz),
-    Bits#(dstDataT, _dstDataSz),
-    FShow#(dstDataT)
-);
-
-    // in/out FIFOs
-    Vector#(srcNum, Fifo#(2, srcDataT)) srcQ <- replicateM(mkCFFifo);
-    Vector#(dstNum, Fifo#(2, dstDataT)) dstQ <- replicateM(mkCFFifo);
-
-    // deq & enq command that should be carried out
-    Vector#(srcNum, Ehr#(2, Bool)) deqSrc <- replicateM(mkEhr(False));
-    Vector#(dstNum, Ehr#(2, Maybe#(dstDataT))) enqDst <- replicateM(mkEhr(Invalid));
-
-    // proposed data transfer by each src
-    Vector#(srcNum, Ehr#(2, Maybe#(dstIdxT))) propDstIdx <- replicateM(mkEhr(Invalid));
-    Vector#(srcNum, Ehr#(2, dstDataT)) propDstData <- replicateM(mkEhr(?));
-
-    // src propose data transfer when src is not empty 
-    // and there is no unfinished deq command for this src
-    for(Integer i = 0; i < valueOf(srcNum); i = i+1) begin
-        (* fire_when_enabled *)
-        rule srcPropose;
-            Maybe#(dstIdxT) propDst = Invalid;
-            dstDataT propData = ?;
-            if(srcQ[i].notEmpty && !deqSrc[i][0]) begin
-                let info = getDstInfo(fromInteger(i), srcQ[i].first);
-                propDst = Valid (info.idx);
-                propData = info.data;
-            end
-            propDstIdx[i][0] <= propDst;
-            propDstData[i][0] <= propData;
-        endrule
-    end
-
-    // reset propose ehr at the end of every cycle
-    (* fire_when_enabled, no_implicit_conditions *)
-    rule resetPropose;
-        for(Integer i = 0; i < valueOf(srcNum); i = i+1) begin
-            propDstIdx[i][1] <= Invalid;
-        end
-    endrule
-
-    // round-robin select src for each dst
-    Vector#(dstNum, Reg#(srcIdxT)) srcRR <- replicateM(mkReg(0));
-
-    // do selection for each dst & generate enq deq commands
-    // dst which has full fifo or unfinished enq command cannot select src
-    (* fire_when_enabled, no_implicit_conditions *)
-    rule dstSelectSrc;
-        // which src to deq by this dst
-        Vector#(dstNum, Maybe#(srcIdxT)) deqSrcByDst = replicate(Invalid);
-        // each dst selects
-        for(Integer dst = 0; dst < valueOf(dstNum); dst = dst + 1) begin
-            // only select src to deq when dst can be enq & no unfinished enq command
-            if(dstQ[dst].notFull && !isValid(enqDst[dst][0])) begin
-                function Bool isFromSrc(srcIdxT src);
-                    // srcQ[src] has proposed data to this dst or not
-                    if(propDstIdx[src][1] matches tagged Valid .dstIdx &&& dstIdx == fromInteger(dst)) begin
-                        return True;
-                    end
-                    else begin
-                        return False;
-                    end
-                endfunction
-                Maybe#(srcIdxT) whichSrc = Invalid; // the src to select
-                if(isFromSrc(srcRR[dst])) begin
-                    // first check the src with priority
-                    whichSrc = Valid (srcRR[dst]);
-                end
-                else begin 
-                    // otherwise just get one valid src
-                    Vector#(srcNum, srcIdxT) srcIdxVec = genWith(fromInteger);
-                    whichSrc = searchIndex(isFromSrc, srcIdxVec);
-                end
-                if(whichSrc matches tagged Valid .src) begin
-                    // can do enq & deq
-                    deqSrcByDst[dst] = whichSrc;
-                    enqDst[dst][0] <= Valid (propDstData[src][1]); // set enq command
-                end
-            end
-        end
-
-        // deq signal for each src
-        function Bool isDeqSrc(srcIdxT src);
-            function Bool isMatch(Maybe#(srcIdxT) deqIdx);
-                return deqIdx matches tagged Valid .idx &&& idx == src ? True : False;
-            endfunction
-            return any(isMatch, deqSrcByDst);
-        endfunction
-        for(Integer i = 0; i < valueOf(srcNum); i = i+1) begin
-            Bool deq = isDeqSrc(fromInteger(i));
-            // only set deq command when there is no unfinished one
-            // otherwise we may overwrite a deq command
-            if(!deqSrc[i][0]) begin
-                deqSrc[i][0] <= deq; // set deq command
-            end
-            else begin
-                doAssert(!deq, "cannot double-deq src");
-            end
-        end
-    endrule
-
-    // deq src
-    for(Integer i = 0; i < valueOf(srcNum); i = i+1) begin
-        (* fire_when_enabled *)
-        rule doDeq;
-            if(deqSrc[i][1]) begin
-                srcQ[i].deq;
-                $display("%t XBar %m con: deq src %d", $time, i);
-                deqSrc[i][1] <= False; // reset deq command
-            end
-        endrule
-    end
-
-    // enq dst & change round robin
-    for(Integer i = 0; i < valueOf(dstNum); i = i+1) begin
-        (* fire_when_enabled *)
-        rule doEnq;
-            if(enqDst[i][1] matches tagged Valid .d) begin
-                dstQ[i].enq(d);
-                enqDst[i][1] <= Invalid; // reset enq command
-                srcRR[i] <= srcRR[i] == fromInteger(valueOf(srcNum) - 1) ? 0 : srcRR[i] + 1;
-                $display("%t XBAR %m con: enq dst %d ; ", $time, i, fshow(d));
-            end
-        endrule
-    end
-
-    interface srcIfc = map(toFifoEnq, srcQ);
-    interface dstIfc = map(toFifoDeq, dstQ);
-endmodule
-*/

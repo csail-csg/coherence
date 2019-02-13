@@ -54,9 +54,11 @@ typedef CRsMsg#(LLChild) CRsToLL;
 typedef PRqRsMsg#(LLCRqId, LLChild) PRqRsFromLL;
 typedef PRqRsMsg#(L1Way, void) PRqRsToL1;
 
+typedef 1 XBarSrcDelay;
+typedef 2 XBarDstDelay;
 
 // cross bar for L1 cRq to LL
-typedef CrossBar#(L1Num, CRqFromL1, LLNum, CRqToLL) L1CRqToLLXBar;
+typedef CrossBar#(L1Num, XBarSrcDelay, CRqFromL1, LLNum, XBarDstDelay, CRqToLL) L1CRqToLLXBar;
 
 (* synthesize *)
 module mkL1CRqToLLXBar(L1CRqToLLXBar);
@@ -78,7 +80,7 @@ module mkL1CRqToLLXBar(L1CRqToLLXBar);
 endmodule
 
 // cross bar for L1 cRs to LL
-typedef CrossBar#(L1Num, CRsFromL1, LLNum, CRsToLL) L1CRsToLLXBar;
+typedef CrossBar#(L1Num, XBarSrcDelay, CRsFromL1, LLNum, XBarDstDelay, CRsToLL) L1CRsToLLXBar;
 
 (* synthesize *)
 module mkL1CRsToLLXBar(L1CRsToLLXBar);
@@ -99,7 +101,7 @@ module mkL1CRsToLLXBar(L1CRsToLLXBar);
 endmodule
 
 // cross bar for LL pRqRs to L1
-typedef CrossBar#(LLNum, PRqRsFromLL, L1Num, PRqRsToL1) LLPRqRsToL1XBar;
+typedef CrossBar#(LLNum, XBarSrcDelay, PRqRsFromLL, L1Num, XBarDstDelay, PRqRsToL1) LLPRqRsToL1XBar;
 
 (* synthesize *)
 module mkLLPRqRsToL1XBar(LLPRqRsToL1XBar);

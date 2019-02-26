@@ -102,7 +102,8 @@ endfunction
 
 function Msi getToState(MemTestOp op);
     case(op)
-        Ld, Lr: return S;
+        Ld: return S;
+        Lr: return E;
         St, Sc, Amo: return M;
         default: return ?;
     endcase

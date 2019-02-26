@@ -35,8 +35,8 @@ typedef TAdd#(L1DNum, L1INum) L1Num;
 typedef 4 L1WayNum;
 typedef Bit#(TLog#(L1WayNum)) L1Way;
 
-typedef 1 LgL1BankNum;
-typedef 6 LgL1SetNum;
+typedef 0 LgL1BankNum;
+typedef 7 LgL1SetNum;
 typedef TExp#(LgL1BankNum) L1BankNum;
 typedef Bit#(LgL1BankNum) L1BankId;
 typedef LgL1SetNum L1IndexSz;

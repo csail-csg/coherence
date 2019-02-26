@@ -69,6 +69,7 @@ module mkL1CRqToLLXBar(L1CRqToLLXBar);
                 addr: rq.addr,
                 fromState: rq.fromState,
                 toState: rq.toState,
+                canUpToE: rq.canUpToE,
                 id: rq.id,
                 child: whichL1
             }

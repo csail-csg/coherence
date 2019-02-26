@@ -26,6 +26,7 @@ import Fifo::*;
 import Vector::*;
 import RWBramCore::*;
 import FShow::*;
+import Types::*;
 import CCTypes::*;
 
 // general type param ordering: way < index < tag < msi < dir < owner < line < pipeCmd
@@ -137,7 +138,9 @@ module mkCCPipe#(
     Bits#(pipeCmdT, _pipeCmdSz),
     Eq#(indexT),
     // index to data ram: {way, normal index}
-    Alias#(dataIndexT, Bit#(TAdd#(TLog#(wayNum), _indexSz)))
+    Alias#(dataIndexT, Bit#(TAdd#(TLog#(wayNum), _indexSz))),
+    // FIXME this is a hack: we force msiT to be Msi (MESI)
+    Alias#(msiT, Msi)
 );
 
     // pipeline regs
@@ -214,6 +217,13 @@ module mkCCPipe#(
         if(e2m.toState matches tagged DownDir .s) begin
             checkDownCRsDataValid(m2o.cmd, m2o.info.dir, isValid(e2m.respLine)); // sanity check on data
             m2o.info.dir <- updateChildDir(m2o.cmd, s, m2o.info.dir);
+            // XXX since child can upgrade from E to M silently, use whether
+            // respLine is valid to determine if we need to upgrade to M. Also
+            // note that respLine field has not been overwritten by bypass.
+            if(isValid(e2m.respLine)) begin
+                doAssert(m2o.info.cs >= E, "must be >= E");
+                m2o.info.cs = M;
+            end
         end
         if(bypass.wget matches tagged Valid .b &&& b.index == index &&& b.way == way &&& !isValid(m2o.line)) begin
             // bypass has lower priority than resp data

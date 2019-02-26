@@ -364,6 +364,7 @@ module mkL1Bank#(
             addr: req.addr,
             fromState: slot.cs,
             toState: req.toState,
+            canUpToE: True,
             id: slot.way,
             child: ?
         };
@@ -408,7 +409,7 @@ module mkL1Bank#(
         );
         // check tag & cs: even this function is called by pRs, tag should match,
         // because tag is written into cache before sending req to parent
-        doAssert(ram.info.tag == getTag(req.addr) && ram.info.cs >= req.toState,
+        doAssert(ram.info.tag == getTag(req.addr) && enoughCacheState(ram.info.cs, req.toState),
             "cRqHit but tag or cs incorrect"
         );
         // process req: resp processor and get new cache line
@@ -458,7 +459,11 @@ module mkL1Bank#(
             pipeline.deqWrite(succ, RamData {
                 info: CacheInfo {
                     tag: getTag(req.addr), // should be the same as original tag
-                    cs: ram.info.cs, // use cs in ram, because ram.info.cs > req.toState is possible
+                    // use max here. ram.info.cs > req.toState is possible in
+                    // may cache hit cases (e.g., req S and hit in M).
+                    // req.toState > ram.info.cs is also possible in case of
+                    // req M and hit E.
+                    cs: max(ram.info.cs, req.toState),
                     dir: ?,
                     owner: succ
                 },
@@ -496,12 +501,13 @@ module mkL1Bank#(
         pipeline.deqWrite(succ, RamData {
             info: CacheInfo {
                 tag: getTag(req.addr), // should be the same as original tag
-                cs: ram.info.cs, // use cs in ram, because ram.info.cs > req.toState is possible
+                cs: M, // AMO always gets to M
                 dir: ?,
                 owner: succ
             },
             line: newLine // write new data into cache
         });
+        doAssert(req.toState == M, "AMO must req for M");
         $display("%t L1 %m processAmo: update ram: ", $time,
             fshow(newLine), " ; ",
             fshow(succ)
@@ -529,8 +535,8 @@ module mkL1Bank#(
             // because cRq is not set to Depend when pRq invalidates it (pRq just directly resp)
             // and this func is only called when cs < toState (otherwise will hit)
             // because L1 has no children to wait for
-            doAssert(!cSlot.waitP && ram.info.cs < procRq.toState, 
-                "waitP must be false and cs must < toState"
+            doAssert(!cSlot.waitP && !enoughCacheState(ram.info.cs, procRq.toState), 
+                "waitP must be false and cs must not be enough"
             );
             // Thus we must send req to parent 
             // XXX first send to a temp indexQ to avoid conflict, then merge to rqToPIndexQ later
@@ -540,7 +546,7 @@ module mkL1Bank#(
                 way: pipeOut.way, // use way from pipeline
                 cs: ram.info.cs, // record cs for future rqToPIndexQ.deq
                 repTag: ?, // no replacement
-                waitP: ram.info.cs < procRq.toState
+                waitP: True // we have req parent, so waiting
             });
             // deq pipeline & set owner, tag
             pipeline.deqWrite(Invalid, RamData {
@@ -619,7 +625,7 @@ module mkL1Bank#(
                 );
                 // Hit or Miss (but no replacement)
                 //(* split *)
-                if(ram.info.cs >= procRq.toState) (* nosplit *) begin
+                if(enoughCacheState(ram.info.cs, procRq.toState)) (* nosplit *) begin
                     $display("%t L1 %m pipelineResp: cRq: own by itself, hit", $time);
                     cRqHit(n, procRq);
                 end
@@ -643,7 +649,7 @@ module mkL1Bank#(
                 if(ram.info.cs == I || ram.info.tag == getTag(procRq.addr)) (* nosplit *) begin
                     // No Replacement necessary
                     //(* split *)
-                    if(ram.info.cs >= procRq.toState) (* nosplit *) begin
+                    if(enoughCacheState(ram.info.cs, procRq.toState)) (* nosplit *) begin
                         $display("%t L1 %m pipelineResp: cRq: no owner, hit", $time);
                         cRqHit(n, procRq);
                     end
@@ -702,7 +708,6 @@ module mkL1Bank#(
             end
         end
         else if(ram.info.owner matches tagged Valid .cOwner) begin
-            // XXX keep this getRq method call, this is involved in checking unsafe cRq MSHR
             procRqT cRq = pipeOutCRq;
             // must be the case the pRq overtakes cRq
             L1CRqState cState = cRqMshr.pipelineResp.getState(cOwner);
@@ -713,7 +718,7 @@ module mkL1Bank#(
                 fshow(cState), " ; ",
                 fshow(cSlot)
             );
-            doAssert(ram.info.cs == S && cRq.toState == M && pRq.toState == I && cState == WaitSt && cSlot.waitP,
+            doAssert(ram.info.cs == S && cRq.toState > S && pRq.toState == I && cState == WaitSt && cSlot.waitP,
                 ("pRq overtakes CRq")
             );
             // process pRq
@@ -729,10 +734,9 @@ module mkL1Bank#(
             });
             rsToPIndexQ.enq(PRq (n));
             // update cRq bookkeeping
-            // XXX keep this update, used in unsafe MSHR checking
             cRqMshr.pipelineResp.setStateSlot(cOwner, WaitSt, L1CRqSlot {
                 way: pipeOut.way,
-                cs: I, // update cs (actually useless...)
+                cs: I, // update cs (actually useless because there cannot be any future pRq)
                 repTag: ?,
                 waitP: True
             });

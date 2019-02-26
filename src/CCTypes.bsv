@@ -63,6 +63,14 @@ instance Ord#(MESI);
     endfunction
 endinstance
 
+// whether cache state is enough to serice upgrade req, i.e., no
+// need to req parent
+function Bool enoughCacheState(Msi cs, Msi to);
+    return cs >= to || cs >= E;
+endfunction
+
+// the maximum dir state that a peer can have so that it will not
+// be downgraded to service upgrade req to state x
 function Msi toCompat(Msi x);
     return x == S ? S : I;
 endfunction
@@ -214,6 +222,7 @@ typedef struct {
     Addr addr;
     Msi fromState;
     Msi toState;
+    Bool canUpToE; // meaningful to upgrade to E if toState is S
     idT id; // slot id in child cache
     childT child; // from which child
 } CRqMsg#(type idT, type childT) deriving(Bits, Eq, FShow);

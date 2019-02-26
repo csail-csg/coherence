@@ -107,12 +107,18 @@ typedef struct {
     // child req stuff
     Msi fromState;
     Msi toState;
+    Bool canUpToE;
     childT child;
     // dma req stuff
     LineByteEn byteEn;
     // req id: distinguish between child and dma
     LLRqId#(cRqIdT, dmaRqIdT) id;
 } LLRq#(type cRqIdT, type dmaRqIdT, type childT) deriving(Bits, Eq, FShow);
+
+typedef struct {
+    cRqIdT cRqId;
+    Msi toState;
+} LLRsInfo#(type cRqIdT) deriving(Bits, Eq, FShow);
 
 // to mem info
 typedef enum {
@@ -187,7 +193,7 @@ module mkLLBank#(
     // mshr index of req that is waken up when replacement is done
     Fifo#(cRqNum, cRqIndexT) cRqRetryIndexQ <- mkCFFifo;
     // mshr index of upgrade resp to child
-    Fifo#(cRqNum, cRqIndexT) rsToCIndexQ <- mkCFFifo;
+    Fifo#(cRqNum, LLRsInfo#(cRqIndexT)) rsToCIndexQ <- mkCFFifo;
     // mshr index of resp to dma (merge 3 FIFOs for each enq places)
     FIFO#(cRqIndexT) rsLdToDmaIndexQ <- mkSizedFIFO(valueof(cRqNum));
     FIFO#(cRqIndexT) rsStToDmaIndexQ <- mkSizedFIFO(valueof(cRqNum));
@@ -338,6 +344,7 @@ module mkLLBank#(
             addr: r.addr,
             fromState: r.fromState,
             toState: r.toState,
+            canUpToE: r.canUpToE,
             child: r.child,
             byteEn: ?,
             id: Child (r.id)
@@ -368,6 +375,7 @@ module mkLLBank#(
             addr: r.addr,
             fromState: r.fromState,
             toState: r.toState,
+            canUpToE: r.canUpToE,
             child: r.child,
             byteEn: ?,
             id: Child (r.id)
@@ -387,6 +395,7 @@ module mkLLBank#(
             addr: r.addr,
             fromState: I,
             toState: write ? M : S, // later on we use toState to distinguish DMA write vs. read
+            canUpToE: False, // DMA should not go to E
             child: ?,
             byteEn: r.byteEn,
             id: Dma (r.id)
@@ -418,6 +427,7 @@ module mkLLBank#(
             addr: r.addr,
             fromState: I,
             toState: write ? M : S,
+            canUpToE: False,
             child: ?,
             byteEn: r.byteEn,
             id: Dma (r.id)
@@ -640,20 +650,22 @@ module mkLLBank#(
     rule sendRsToC(rsToCIndexQ.notEmpty);
         // send upgrade resp to child
         rsToCIndexQ.deq;
-        cRqIndexT n = rsToCIndexQ.first;
+        cRqIndexT n = rsToCIndexQ.first.cRqId;
+        Msi toState = rsToCIndexQ.first.toState;
         cRqT cRq = cRqMshr.sendRsToDmaC.getRq(n);
         Maybe#(Line) rsData = cRqMshr.sendRsToDmaC.getData(n);
         $display("%t LL %m sendRsToC: ", $time, 
             fshow(n), " ; ", 
             fshow(cRq), " ; ", 
-            fshow(rsData)
+            fshow(rsData), " ; ",
+            fshow(toState)
         );
         // send resp to child
         doAssert(isRqFromC(cRq.id), "cRq should be child req");
         cRqIdT cRqId = getIdFromC(cRq.id);
         toCQ.enq(PRs (PRsMsg {
             addr: cRq.addr,
-            toState: cRq.toState,
+            toState: toState, // we may upgrade to E for req S, don't use toState in cRq
             child: cRq.child,
             data: rsData,
             id: cRqId
@@ -780,17 +792,25 @@ module mkLLBank#(
             // tag has been written into cache before sending req to parent
             ("cRqHit but tag or cs incorrect")
         );
+        // decide upgrade state
+        Msi toState = cRq.toState;
+        if(cRq.toState == S && cRq.canUpToE && ram.info.dir == replicate(I)) begin
+            toState = E;
+        end
         // update slot, data & send to indexQ
         // decide data validity using dir (which is more up to date than fromState)
-        rsToCIndexQ.enq(n);
+        rsToCIndexQ.enq(LLRsInfo {
+            cRqId: n,
+            toState: toState
+        });
         cRqMshr.pipelineResp.setStateSlot(n, Done, ?); // we no longer need slot info
         cRqMshr.pipelineResp.setData(n, ram.info.dir[cRq.child] == I ? Valid (ram.line) : Invalid);
         // update child dir
         dirT newDir = ram.info.dir;
-        newDir[cRq.child] = cRq.toState;
-        // update cs
+        newDir[cRq.child] = toState;
+        // update cs (may have E -> M)
         Msi newCs = ram.info.cs;
-        if(cRq.toState == M) begin
+        if(toState == M) begin
             newCs = M;
         end
         // deq pipeline or swap in successor
@@ -826,7 +846,7 @@ module mkLLBank#(
             "cRqHit but tag or cs incorrect"
         );
         doAssert((cRq.byteEn != replicate(False)) == (cRq.toState == M), "toState should match byteEn");
-        // update cs
+        // update cs (may have E -> M)
         Msi newCs = ram.info.cs;
         if(cRq.toState == M) begin
             newCs = M;
@@ -1255,6 +1275,8 @@ module mkLLBank#(
     // handle cRs
     rule pipelineResp_cRs(pipeOut.cmd matches tagged LLCRs .child);
         // cRs from child
+        // XXX CCPipe has already updated ram.info and ram.line properly,
+        // particularly for E->M case.
         $display("%t LL %m pipelineResp: cRs: ", $time, fshow(child));
         // cs should be not I
         doAssert(ram.info.cs > I, "cRs should hit on a line");

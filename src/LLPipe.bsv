@@ -260,9 +260,17 @@ module mkLLPipe(
 
     function Action checkDownCRsDataValid(pipeCmdT cmd, dirT dir, Bool dataV);
     action
-        doAssert(cmd matches tagged CRs .cRs &&& ((dir[cRs.child] == M) == dataV) ? True : False, 
-            "cRs has data for downgrade from M"
-        );
+        if(cmd matches tagged CRs .cRs) begin
+            if(dataV) begin
+                doAssert(dir[cRs.child] >= E, "cRs with data, dir must be >= E");
+            end
+            else begin
+                doAssert(dir[cRs.child] < M, "cRs without data, dir must < M");
+            end
+        end
+        else begin
+            doAssert(False, "only cRs calls this");
+        end
     endaction
     endfunction
 

@@ -60,6 +60,8 @@ interface CCPipe#(
     method PipeOut#(Bit#(TLog#(wayNum)), tagT, msiT, dirT, ownerT, lineT, pipeCmdT) unguard_first;
     method Bool notEmpty;
     method Action deqWrite(Maybe#(pipeCmdT) newCmd, RamData#(tagT, msiT, dirT, ownerT, lineT) wrRam);
+    // empty signal when we need to flush self-invalidate cache
+    method Bool empty_for_flush;
 endinterface
 
 // internal pipeline reg types
@@ -315,5 +317,9 @@ module mkCCPipe#(
             // reset pipeline reg
             mat2Out_out <= Invalid;
         end
+    endmethod
+
+    method Bool empty_for_flush;
+        return !isValid(mat2Out[0]) && !isValid(enq2Mat[0]);
     endmethod
 endmodule

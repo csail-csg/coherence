@@ -102,8 +102,8 @@ module mkIBank#(
     Alias#(cRqIdxT, Bit#(TLog#(cRqNum))),
     Alias#(pRqIdxT, Bit#(TLog#(pRqNum))),
     Alias#(cacheOwnerT, Maybe#(cRqIdxT)), // owner cannot be pRq
-    Alias#(cacheInfoT, CacheInfo#(tagT, Msi, void, cacheOwnerT)),
-    Alias#(ramDataT, RamData#(tagT, Msi, void, cacheOwnerT, Line)),
+    Alias#(cacheInfoT, CacheInfo#(tagT, Msi, void, cacheOwnerT, void)),
+    Alias#(ramDataT, RamData#(tagT, Msi, void, cacheOwnerT, void, Line)),
     Alias#(procRqT, ProcRqToI),
     Alias#(cRqToPT, CRqMsg#(wayT, void)),
     Alias#(cRsToPT, CRsMsg#(void)),
@@ -112,7 +112,7 @@ module mkIBank#(
     Alias#(pRqRsFromPT, PRqRsMsg#(wayT, void)),
     Alias#(cRqSlotT, ICRqSlot#(wayT, tagT)), // cRq MSHR slot
     Alias#(l1CmdT, L1Cmd#(indexT, cRqIdxT, pRqIdxT)),
-    Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, void, cacheOwnerT, Line, l1CmdT)),
+    Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, void, cacheOwnerT, void, Line, l1CmdT)),
     Alias#(resultT, Vector#(supSz, Maybe#(Instruction))),
     // requirements
     FShow#(pipeOutT),
@@ -422,10 +422,11 @@ module mkIBank#(
                 tag: getTag(req.addr), // should be the same as original tag
                 cs: ram.info.cs, // use cs in ram
                 dir: ?,
-                owner: succ
+                owner: succ,
+                other: ?
             },
             line: ram.line
-        });
+        }, True); // hit, so update rep info
         // process req to get superscalar inst read results
         // set MSHR entry as Done & save inst results
         let instResult = readInst(ram.line, req.addr);
@@ -473,10 +474,11 @@ module mkIBank#(
                     tag: getTag(procRq.addr), // tag may be garbage if cs == I
                     cs: ram.info.cs,
                     dir: ?,
-                    owner: Valid (n) // owner is req itself
+                    owner: Valid (n), // owner is req itself
+                    other: ?
                 },
                 line: ram.line
-            });
+            }, False);
         endaction
         endfunction
 
@@ -489,10 +491,11 @@ module mkIBank#(
                     tag: getTag(procRq.addr), // set to req tag (old tag is replaced right now)
                     cs: I,
                     dir: ?,
-                    owner: Valid (n) // owner is req itself
+                    owner: Valid (n), // owner is req itself
+                    other: ?
                 },
                 line: ? // data is no longer used
-            });
+            }, False);
             doAssert(ram.info.cs == S, "I$ replacement only replace S line");
             // update MSHR to save replaced tag
             // although we send req to parent later (when resp to parent is sent)
@@ -511,7 +514,7 @@ module mkIBank#(
         function Action cRqSetDepNoCacheChange;
         action
             cRqMshr.pipelineResp.setStateSlot(n, Depend, defaultValue);
-            pipeline.deqWrite(Invalid, pipeOut.ram);
+            pipeline.deqWrite(Invalid, pipeOut.ram, False);
         endaction
         endfunction
 
@@ -602,7 +605,7 @@ module mkIBank#(
             $display("%t I %m pipelineResp: pRq: drop", $time);
             // pRq can be directly dropped, no successor (since just go through pipeline)
             pRqMshr.pipelineResp.releaseEntry(n);
-            pipeline.deqWrite(Invalid, pipeOut.ram);
+            pipeline.deqWrite(Invalid, pipeOut.ram, False);
         end
         else begin
             $display("%t I %m pipelineResp: pRq: valid process", $time);
@@ -620,10 +623,11 @@ module mkIBank#(
                     tag: ram.info.tag,
                     cs: I, // I$ is always downgraded by pRq to I
                     dir: ?,
-                    owner: Invalid // no successor
+                    owner: Invalid, // no successor
+                    other: ?
                 },
                 line: ? // line is not useful
-            });
+            }, False);
             // pRq is done
             pRqMshr.pipelineResp.setDone(n);
             // send resp to parent
@@ -666,10 +670,11 @@ module mkIBank#(
                 tag: ?,
                 cs: I, // downgraded to I
                 dir: ?,
-                owner: Invalid // no successor
+                owner: Invalid, // no successor
+                other: ?
             },
             line: ?
-        });
+        }, False);
 
         // check if we have finished all flush
         if (flush.index == maxBound &&

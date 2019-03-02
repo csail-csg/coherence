@@ -93,6 +93,7 @@ interface SelfInvL1Pipe#(
     );
     // drop stale clean cache lines
     method Action reconcile;
+    method Bool reconcile_done;
 endinterface
 
 // real cmd used in pipeline
@@ -236,10 +237,6 @@ module mkSelfInvL1Pipe(
     // data RAM
     RWBramCore#(dataIndexT, Line) dataRam <- mkRWBramCore;
 
-    // reconcile conflicts with enq and deq
-    RWire#(void) conflict_reconcile_enq <- mkRWire;
-    RWire#(void) conflict_reconcile_deq <- mkRWire;
-    
     // initialize RAM
     Reg#(Bool) initDone <- mkReg(False);
     Reg#(indexT) initIndex <- mkReg(0);
@@ -371,7 +368,27 @@ module mkSelfInvL1Pipe(
         infoRam, dataRam
     );
 
-    method Action send(pipeInT req);
+    // reconcile: wait until pipeline empty and drop all S states. Stall
+    // pipeline enq while we are waiting. Make the reconcile rule conflict with
+    // pipeline deq to remove any possible race (the guard of reconcile rule
+    // actually should have done the job). 
+    Reg#(Bool) needReconcile <- mkReg(False);
+
+    RWire#(void) conflict_reconcile_deq <- mkRWire;
+    
+    rule doReconcile(initDone && needReconcile && pipe.empty_for_flush);
+        function Action flush(CacheInfoArray#(indexT, tagT, ownerT) ifc);
+        action
+            ifc.reconcile;
+        endaction
+        endfunction
+        joinActions(map(flush, infoArray));
+        // conflict with deq
+        conflict_reconcile_deq.wset(?);
+    endrule
+
+    // stall enq for reconcile
+    method Action send(pipeInT req) if(!needReconcile);
         case(req) matches
             tagged CRq .rq: begin
                 pipe.enq(CRq (rq), Invalid, Invalid);
@@ -386,8 +403,6 @@ module mkSelfInvL1Pipe(
                 }), rs.data, UpCs (rs.toState));
             end
         endcase
-        // conflict with reconcile
-        conflict_reconcile_enq.wset(?);
     endmethod
 
     // need to adapt pipeline output to real output format
@@ -419,16 +434,9 @@ module mkSelfInvL1Pipe(
         conflict_reconcile_deq.wset(?);
     endmethod
 
-    // Wait until pipeline empty and drop all S states
-    method Action reconcile if(initDone && pipe.empty_for_flush);
-        function Action flush(CacheInfoArray#(indexT, tagT, ownerT) ifc);
-        action
-            ifc.reconcile;
-        endaction
-        endfunction
-        joinActions(map(flush, infoArray));
-        // conflict with enq/deq
-        conflict_reconcile_enq.wset(?);
-        conflict_reconcile_deq.wset(?);
+    method Action reconcile if(!needReconcile);
+        needReconcile <= True;
     endmethod
+
+    method reconcile_done = !needReconcile;
 endmodule

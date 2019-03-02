@@ -103,12 +103,13 @@ interface L1Pipe#(
     method PipeOut#(
         Bit#(TLog#(wayNum)), 
         tagT, Msi, void, // no dir
-        Maybe#(cRqIdxT),
+        Maybe#(cRqIdxT), void, RandRepInfo, // no other
         Line, L1Cmd#(indexT, cRqIdxT, pRqIdxT)
     ) first;
     method Action deqWrite(
         Maybe#(cRqIdxT) swapRq,
-        RamData#(tagT, Msi, void, Maybe#(cRqIdxT), Line) wrRam // always write BRAM
+        RamData#(tagT, Msi, void, Maybe#(cRqIdxT), Line) wrRam, // always write BRAM
+        Bool updateRep
     );
 endinterface
 
@@ -138,14 +139,18 @@ module mkL1Pipe(
     Alias#(wayT, Bit#(TLog#(wayNum))),
     Alias#(dirT, void), // no directory
     Alias#(ownerT, Maybe#(cRqIdxT)),
+    Alias#(otherT, void), // no other cache info
+    Alias#(repT, RandRepInfo), // use random replace
     Alias#(pipeInT, L1PipeIn#(wayT, indexT, cRqIdxT, pRqIdxT)),
     Alias#(pipeCmdT, L1PipeCmd#(wayT, indexT, cRqIdxT, pRqIdxT)),
     Alias#(l1CmdT, L1Cmd#(indexT, cRqIdxT, pRqIdxT)),
-    Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, dirT, ownerT, Line, l1CmdT)), // output type
-    Alias#(infoT, CacheInfo#(tagT, Msi, dirT, ownerT)),
-    Alias#(ramDataT, RamData#(tagT, Msi, dirT, ownerT, Line)),
+    Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, dirT, ownerT, otherT, repT, Line, l1CmdT)), // output type
+    Alias#(infoT, CacheInfo#(tagT, Msi, dirT, ownerT, otherT)),
+    Alias#(ramDataT, RamData#(tagT, Msi, dirT, ownerT, otherT, Line)),
     Alias#(respStateT, RespState#(Msi)),
     Alias#(tagMatchResT, TagMatchResult#(wayT)),
+    Alias#(updateByUpCsT, UpdateByUpCs#(Msi)),
+    Alias#(updateByDownDirT, UpdateByDownDir#(Msi, dirT)),
     Alias#(dataIndexT, Bit#(TAdd#(TLog#(wayNum), indexSz))),
     // requirement
     Alias#(indexT, Bit#(indexSz)),
@@ -157,6 +162,7 @@ module mkL1Pipe(
 );
     // RAMs
     Vector#(wayNum, RWBramCore#(indexT, infoT)) infoRam <- replicateM(mkRWBramCore);
+    RWBramCore#(indexT, repT) repRam <- mkRandRepRam;
     RWBramCore#(dataIndexT, Line) dataRam <- mkRWBramCore;
     
     // initialize RAM
@@ -172,6 +178,7 @@ module mkL1Pipe(
                 owner: Invalid
             });
         end
+        repRam.wrReq(initIndex, randRepInitInfo); // useless for random replace
         initIndex <= initIndex + 1;
         if(initIndex == maxBound) begin
             initDone <= True;
@@ -278,29 +285,37 @@ module mkL1Pipe(
         endactionvalue;
     endfunction
 
-    function ActionValue#(dirT) updateChildDir(pipeCmdT cmd, Msi toState, dirT oldDir);
+    function ActionValue#(updateByUpCsT) updateByUpCs(
+        pipeCmdT cmd, Msi toState, Bool dataV, Msi oldCs
+    );
     actionvalue
-        doAssert(False, "L1 should not update dir");
+        doAssert(toState > oldCs, "should truly upgrade cs");
+        doAssert((oldCs == I) == dataV, "valid resp data for upgrade from I");
+        return UpdateByUpCs {cs: toState};
+    endactionvalue
+    endfunction
+
+    function ActionValue#(updateByDownDirT) updateByDownDir(
+        pipeCmdT cmd, Msi toState, Bool dataV, Msi oldCs dirT oldDir
+    );
+    actionvalue
+        doAssert(False, "L1 does not have dir");
         return ?;
     endactionvalue
     endfunction
 
-    function Action checkUpPRsDataValid(Msi cs, Bool dataV);
-    action
-        doAssert((cs == I) == dataV, ("valid resp data for upgrade from I"));
-    endaction
+    function ActionValue#(repT) updateRepInfo(repT r, wayT w);
+    actionvalue
+        return ?; // random replace does not have bookkeeping
+    endactionvalue
     endfunction
 
-    function Action checkDownCRsDataValid(pipeCmdT cmd, dirT dir, Bool dataV);
-    action
-        doAssert(False, ("L1 should not have cRs"));
-    endaction
-    endfunction
-
-    CCPipe#(wayNum, indexT, tagT, Msi, dirT, ownerT, Line, pipeCmdT) pipe <- mkCCPipe(
-        regToReadOnly(initDone), getIndex, tagMatch, updateChildDir, 
-        checkUpPRsDataValid, checkDownCRsDataValid,
-        infoRam, dataRam
+    CCPipe#(
+        wayNum, indexT, tagT, Msi, dirT, ownerT, otherT, repT, Line, pipeCmdT
+    ) pipe <- mkCCPipe(
+        regToReadOnly(initDone), getIndex, tagMatch,
+        updateByUpCs, updateByDownDir, updateRepInfo,
+        infoRam, repRam, dataRam
     );
 
     method Action send(pipeInT req);
@@ -343,11 +358,12 @@ module mkL1Pipe(
             endcase),
             way: pout.way,
             pRqMiss: pout.pRqMiss,
-            ram: pout.ram
+            ram: pout.ram,
+            repInfo: pout.repInfo
         };
     endmethod
 
-    method Action deqWrite(Maybe#(cRqIdxT) swapRq, ramDataT wrRam);
+    method Action deqWrite(Maybe#(cRqIdxT) swapRq, ramDataT wrRam, Bool updateRep);
         // get new cmd
         Maybe#(pipeCmdT) newCmd = Invalid;
         if(swapRq matches tagged Valid .idx) begin // swap in cRq
@@ -359,6 +375,6 @@ module mkL1Pipe(
 `endif
         end
         // call pipe
-        pipe.deqWrite(newCmd, wrRam);
+        pipe.deqWrite(newCmd, wrRam, updateRep);
     endmethod
 endmodule

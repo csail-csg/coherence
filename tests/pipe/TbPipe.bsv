@@ -41,6 +41,8 @@ typedef Bit#(16) Tag;
 typedef Bit#(2) MsiT;
 typedef Bit#(8) Dir;
 typedef Bit#(4) Owner;
+typedef Bit#(8) Other;
+typedef Bit#(8) RepInfo;
 typedef Bit#(64) Line;
 typedef Bit#(32) Data;
 
@@ -56,28 +58,36 @@ typedef struct {
     Data data; 
 } PipeCmd deriving(Bits, Eq, FShow);
 
-typedef CacheInfo#(Tag, MsiT, Dir, Owner) InfoType;
-typedef RamData#(Tag, MsiT, Dir, Owner, Line) RamDataType;
+typedef CacheInfo#(Tag, MsiT, Dir, Owner, Other) InfoType;
+typedef RamData#(Tag, MsiT, Dir, Owner, Other, Line) RamDataType;
 typedef RespState#(MsiT) RespStateType;
-typedef PipeOut#(Way, Tag, MsiT, Dir, Owner, Line, PipeCmd) PipeOutType;
+typedef PipeOut#(Way, Tag, MsiT, Dir, Owner, Other, RepInfo, Line, PipeCmd) PipeOutType;
 
 typedef struct {
     PipeCmd cmd;
     Maybe#(Line) respLine;
     RespStateType toState;
-} EnqInfo deriving(Bits, Eq);
+} EnqInfo deriving(Bits, Eq, FShow);
 
 typedef struct {
     PipeCmd cmd;
     Vector#(WayNum, Tag) tagVec;
     Vector#(WayNum, MsiT) csVec;
     Vector#(WayNum, Owner) ownerVec;
-} TagMatchInfo deriving(Bits, Eq);
+    RepInfo repInfo;
+} TagMatchInfo deriving(Bits, Eq, FShow);
+
+typedef struct {
+    RepInfo oldInfo;
+    Way way;
+    RepInfo newInfo;
+} UpdateRepInfo deriving(Bits, Eq, FShow);
 
 typedef struct {
     Maybe#(PipeCmd) newCmd;
     RamDataType wrRam;
-} DeqInfo deriving(Bits, Eq);
+    Bool updateRep;
+} DeqInfo deriving(Bits, Eq, FShow);
 
 typedef Bit#(2) RandEnq;
 function Bool getEnq(RandEnq r);
@@ -123,12 +133,14 @@ module mkTbPipe(Empty);
     // reference
     Vector#(IndexNum, Vector#(WayNum, Reg#(Line))) refDataRam <- replicateM(replicateM(mkReg(0)));
     Vector#(IndexNum, Vector#(WayNum, Reg#(InfoType))) refInfoRam <- replicateM(replicateM(mkReg(unpack(0))));
+    Vector#(IndexNum, Reg#(RepInfo)) refRepInfoRam <- replicateM(mkReg(0));
 
-    // EHRs to record info
-    Ehr#(2, Maybe#(TagMatchInfo)) tmInfo <- mkEhr(Invalid);
-    Ehr#(2, Maybe#(PipeOutType)) pipeOut <- mkEhr(Invalid);
-    Ehr#(2, Maybe#(EnqInfo)) enqInfo <- mkEhr(Invalid);
-    Ehr#(2, Maybe#(DeqInfo)) deqInfo <- mkEhr(Invalid);
+    // Wires to record info
+    RWire#(TagMatchInfo) tmInfo <- mkRWire;
+    RWire#(UpdateRepInfo) updateRepInfo <- mkRWire;
+    RWire#(PipeOutType) pipeOut <- mkRWire;
+    RWire#(EnqInfo) enqInfo <- mkRWire;
+    RWire#(DeqInfo) deqInfo <- mkRWire;
     // record in-flight pipeIn
     Reg#(Vector#(MaxPending, EnqInfo)) pendReq <- mkReg(replicate(?));
     // send & recv test cnts
@@ -151,6 +163,8 @@ module mkTbPipe(Empty);
     Randomize#(MsiT) randWrCs <- mkGenericRandomizer;
     Randomize#(Dir) randWrDir <- mkGenericRandomizer;
     Randomize#(Owner) randWrOwner <- mkGenericRandomizer;
+    Randomize#(Other) randWrOther <- mkGenericRandomizer;
+    Randomize#(Bool) randWrUpdateRep <- mkGenericRandomizer;
     Randomize#(Line) randWrLine <- mkGenericRandomizer;
     // check ptrs
     Reg#(Index) checkIndex <- mkReg(0);
@@ -170,27 +184,29 @@ module mkTbPipe(Empty);
         PipeCmd cmd, 
         Vector#(WayNum, Tag) tags, 
         Vector#(WayNum, MsiT) css, 
-        Vector#(WayNum, Owner) owners
+        Vector#(WayNum, Owner) owners,
+        RepInfo repInfo
     );
-        return actionvalue
-            if(testFSM == Process) begin
-            end
-            else begin
-                $fwrite(stderr, "[TbPipe] ERROR: tagMatch called in ", fshow(testFSM), "\n");
-                $finish;
-            end
-            // record ram output at tag match stage
-            tmInfo[0] <= Valid (TagMatchInfo {
-                cmd: cmd,
-                tagVec: tags,
-                csVec: css,
-                ownerVec: owners
-            });
-            return TagMatchResult {
-                way: cmd.way,
-                pRqMiss: cmd.pRqMiss
-            };
-        endactionvalue;
+    actionvalue
+        if(testFSM == Process) begin
+        end
+        else begin
+            $fwrite(stderr, "[TbPipe] ERROR: tagMatch called in ", fshow(testFSM), "\n");
+            $finish;
+        end
+        // record ram output at tag match stage
+        tmInfo.wset(TagMatchInfo {
+            cmd: cmd,
+            tagVec: tags,
+            csVec: css,
+            ownerVec: owners,
+            repInfo: repInfo
+        });
+        return TagMatchResult {
+            way: cmd.way,
+            pRqMiss: cmd.pRqMiss
+        };
+    endactionvalue;
     endfunction
 
     function ActionValue#(Dir) updateChildDir(PipeCmd cmd, MsiT s, Dir dir);
@@ -207,20 +223,35 @@ module mkTbPipe(Empty);
         return noAction;
     endfunction
 
+    function ActionValue#(RepInfo) updateReplacement(RepInfo r, Way w);
+    actionvalue
+        RepInfo newInfo = r + zeroExtend(w);
+        updateRepInfo.wset(UpdateRepInfo {
+            oldInfo: r,
+            way: w,
+            newInfo: newInfo
+        });
+        return newInfo;
+    endactionvalue
+    endfunction
+
     // RAMs
     Vector#(WayNum, RWBramCore#(Index, InfoType)) infoRam <- replicateM(mkRWBramCore);
     Vector#(WayNum, RWBramCore#(Index, Line)) dataRam <- replicateM(mkRWBramCore);
+    RWBramCore#(Index, RepInfo) repRam <- mkRWBramCore;
     // DUT
     ReadOnly#(Bool) initDone = (interface ReadOnly;
         method Bool _read = testFSM != Init;
     endinterface);
-    CCPipe#(WayNum, Index, Tag, MsiT, Dir, Owner, Line, PipeCmd) dutPipe <- mkCCPipe(
-        initDone, getIndex, tagMatch, updateChildDir, checkPRsData, checkCRsData, infoRam, dataRam
+    CCPipe#(WayNum, Index, Tag, MsiT, Dir, Owner, Other, RepInfo, Line, PipeCmd) dutPipe <- mkCCPipe(
+        initDone, getIndex, tagMatch, updateChildDir, checkPRsData, checkCRsData, updateReplacement,
+        infoRam, repRam, dataRam
     );
 
     // log files
     Reg#(File) enqLog <- mkReg(InvalidFile);
     Reg#(File) tmLog <- mkReg(InvalidFile); // tag match
+    Reg#(File) updateRepLog <- mkReg(InvalidFile);
     Reg#(File) outLog <- mkReg(InvalidFile);
     Reg#(File) deqLog <- mkReg(InvalidFile);
     Reg#(File) checkLog <- mkReg(InvalidFile); // final ram value
@@ -230,6 +261,7 @@ module mkTbPipe(Empty);
             infoRam[i].wrReq(initIndex, unpack(0));
             dataRam[i].wrReq(initIndex, 0);
         end
+        repRam.wrreq(initIndex, 0);
         if(initIndex < fromInteger(valueOf(IndexNum) - 1)) begin
             initIndex <= initIndex + 1;
         end
@@ -250,12 +282,16 @@ module mkTbPipe(Empty);
             randWrCs.cntrl.init;
             randWrDir.cntrl.init;
             randWrOwner.cntrl.init;
+            randWrOther.cntrl.init;
+            randWrUpdateRep.cntrl.init;
             randWrLine.cntrl.init;
             // create log files
             File f <- $fopen("enq.log", "w");
             enqLog <= f;
             f <- $fopen("tm.log", "w");
             tmLog <= f;
+            f <- $fopen("updateRep.log", "w");
+            updateRepLog <= f;
             f <- $fopen("deq.log", "w");
             deqLog <= f;
             f <- $fopen("out.log", "w");
@@ -349,16 +385,6 @@ module mkTbPipe(Empty);
     rule conProcess(testFSM == Process);
         Vector#(MaxPending, EnqInfo) pendReqNext = pendReq;
 
-        // apply enq effect
-        if(enqInfo[1] matches tagged Valid .e) begin
-            pendReqNext[getPendIdx(sendCnt)] = e;
-            sendCnt <= sendCnt + 1;
-            $fwrite(enqLog, "time: %t, send %d", $time, sendCnt,
-                "\ncmd: ", fshow(e.cmd),
-                "\nrespLine: ", fshow(e.respLine),
-                "\ntoState: ", fshow(e.toState), "\n\n"
-            );
-        end
         // apply deq effect
         if(deqInfo[1] matches tagged Valid .deq) begin
             // do deq or swap
@@ -387,6 +413,16 @@ module mkTbPipe(Empty);
                 "\ndir: ", fshow(deq.wrRam.info.dir),
                 "\nowner: ", fshow(deq.wrRam.info.owner),
                 "\nline: ", fshow(deq.wrRam.line), "\n\n"
+            );
+        end
+        // apply enq effect
+        if(enqInfo[1] matches tagged Valid .e) begin
+            pendReqNext[getPendIdx(sendCnt)] = e;
+            sendCnt <= sendCnt + 1;
+            $fwrite(enqLog, "time: %t, send %d", $time, sendCnt,
+                "\ncmd: ", fshow(e.cmd),
+                "\nrespLine: ", fshow(e.respLine),
+                "\ntoState: ", fshow(e.toState), "\n\n"
             );
         end
         // write reg

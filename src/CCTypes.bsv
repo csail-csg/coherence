@@ -156,28 +156,31 @@ typedef union tagged {
     PRqOwner#(pRqIdxT) PRq;
 } CacheOwner#(type cRqIdxT, type pRqIdxT) deriving(Bits, Eq, FShow);
 
-// cache info: tag, cs, dir, owner
+// cache info: tag, cs, dir, owner, and other
 typedef struct {
     tagT tag;
     msiT cs;
     dirT dir;
     ownerT owner;
+    otherT other;
 } CacheInfo#(
-    type tagT, 
-    type msiT, 
-    type dirT, 
-    type ownerT
+    type tagT,
+    type msiT,
+    type dirT,
+    type ownerT,
+    type otherT
 ) deriving(Bits, Eq, FShow);
 
 // ram output
 typedef struct {
-    CacheInfo#(tagT, msiT, dirT, ownerT) info;
+    CacheInfo#(tagT, msiT, dirT, ownerT, otherT) info;
     lineT line;
 } RamData#(
-    type tagT, 
-    type msiT, 
-    type dirT, 
-    type ownerT, 
+    type tagT,
+    type msiT,
+    type dirT,
+    type ownerT,
+    type otherT,
     type lineT
 ) deriving(Bits, Eq, FShow);
 

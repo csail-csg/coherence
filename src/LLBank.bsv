@@ -148,8 +148,8 @@ module mkLLBank#(
     Alias#(tagT, Bit#(tagSz)),
     Alias#(cRqIndexT, Bit#(TLog#(cRqNum))),
     Alias#(cacheOwnerT, Maybe#(CRqOwner#(cRqIndexT))),
-    Alias#(cacheInfoT, CacheInfo#(tagT, Msi, dirT, cacheOwnerT)),
-    Alias#(ramDataT, RamData#(tagT, Msi, dirT, cacheOwnerT, Line)),
+    Alias#(cacheInfoT, CacheInfo#(tagT, Msi, dirT, cacheOwnerT, void)),
+    Alias#(ramDataT, RamData#(tagT, Msi, dirT, cacheOwnerT, void, Line)),
     Alias#(cRqFromCT, CRqMsg#(cRqIdT, childT)),
     Alias#(cRsFromCT, CRsMsg#(childT)),
     Alias#(pRqRsToCT, PRqRsMsg#(cRqIdT, childT)),
@@ -162,7 +162,7 @@ module mkLLBank#(
     Alias#(cRqT, LLRq#(cRqIdT, dmaRqIdT, childT)),
     Alias#(cRqSlotT, LLCRqSlot#(childNum, wayT, tagT)), // cRq MSHR slot
     Alias#(llCmdT, LLCmd#(childT, cRqIndexT)),
-    Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, dirT, cacheOwnerT, Line, llCmdT)),
+    Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, dirT, cacheOwnerT, void, Line, llCmdT)),
     // requirements
     Bits#(cRqIdT, _cRqIdSz),
     Bits#(dmaRqIdT, _dmaRqIdSz),
@@ -826,10 +826,11 @@ module mkLLBank#(
                         replacing: False // succesor cannot replace
                     });
                     default: return Invalid;
-                endcase)
+                endcase),
+                other: ?
             },
             line: ram.line // use line in ram
-        });
+        }, True); // hit, so update rep info
     endaction
     endfunction
 
@@ -870,10 +871,11 @@ module mkLLBank#(
                         replacing: False // succesor cannot replace
                     });
                     default: return Invalid;
-                endcase)
+                endcase),
+                other: ?
             },
             line: newLine // use new line
-        });
+        }, True); // hit, so update rep info
         // update slot, data & send to indexQ
         cRqMshr.pipelineResp.setStateSlot(n, Done, ?); // we no longer need  slot info
         cRqMshr.pipelineResp.setData(n, Valid (ram.line)); // save the orig cache line
@@ -931,10 +933,11 @@ module mkLLBank#(
                 owner: Valid (CRqOwner {
                     mshrIdx: n, // owner is current cRq
                     replacing: False // replacement is done right now
-                })
+                }),
+                other: ?
             },
             line: ? // data is no longer used
-        });
+        }, False);
     endaction
     endfunction
 
@@ -1012,10 +1015,11 @@ module mkLLBank#(
                     tag: getTag(cRq.addr), // tag may be garbage if cs == I
                     cs: ram.info.cs,
                     dir: ram.info.dir,
-                    owner: Valid (CRqOwner {mshrIdx: n, replacing: False}) // owner is req itself
+                    owner: Valid (CRqOwner {mshrIdx: n, replacing: False}), // owner is req itself
+                    other: ?
                 },
                 line: ram.line
-            });
+            }, False);
         endaction
         endfunction
 
@@ -1043,10 +1047,11 @@ module mkLLBank#(
                     tag: getTag(cRq.addr),
                     cs: ram.info.cs,
                     dir: ram.info.dir,
-                    owner: Valid (CRqOwner {mshrIdx: n, replacing: False}) // owner is req itself
+                    owner: Valid (CRqOwner {mshrIdx: n, replacing: False}), // owner is req itself
+                    other: ?
                 },
                 line: ram.line
-            });
+            }, False);
         endaction
         endfunction
 
@@ -1071,10 +1076,11 @@ module mkLLBank#(
                         owner: Valid (CRqOwner {
                             mshrIdx: n,
                             replacing: True // replacement is ongoing
-                        })
+                        }),
+                        other: ?
                     },
                     line: ram.line // keep data the same
-                });
+                }, False);
                 cRqMshr.pipelineResp.setStateSlot(n, WaitOldTag, LLCRqSlot {
                     way: pipeOut.way,
                     repTag: ram.info.tag, // record tag for downgrading children
@@ -1089,7 +1095,7 @@ module mkLLBank#(
         function Action cRqSetDepNoCacheChange;
         action
             cRqMshr.pipelineResp.setStateSlot(n, Depend, defaultValue);
-            pipeline.deqWrite(Invalid, pipeOut.ram);
+            pipeline.deqWrite(Invalid, pipeOut.ram, False);
         endaction
         endfunction
 
@@ -1229,7 +1235,7 @@ module mkLLBank#(
                         });
                         // set req to Done & deq pipeline (no change to ram)
                         cRqMshr.pipelineResp.setStateSlot(n, Done, ?);
-                        pipeline.deqWrite(Invalid, pipeOut.ram);
+                        pipeline.deqWrite(Invalid, pipeOut.ram, False);
                         // retry successor (cannot swap in since we don't have a line to occupy)
                         Maybe#(cRqIndexT) addrSucc = pipeOutAddrSucc;
                         if(addrSucc matches tagged Valid .m) begin
@@ -1315,7 +1321,7 @@ module mkLLBank#(
                 end
                 else begin
                     // replacement is still ongoing, just deq pipe & write ram & update dirPend
-                    pipeline.deqWrite(Invalid, ram);
+                    pipeline.deqWrite(Invalid, ram, False);
                     cRqMshr.pipelineResp.setStateSlot(cOwner.mshrIdx, WaitOldTag, LLCRqSlot {
                         way: cSlot.way,
                         repTag: cSlot.repTag,
@@ -1360,7 +1366,7 @@ module mkLLBank#(
                 end
                 else begin
                     // still wait for children: deq pipe & write ram & update dirPend
-                    pipeline.deqWrite(Invalid, ram);
+                    pipeline.deqWrite(Invalid, ram, False);
                     cRqMshr.pipelineResp.setStateSlot(cOwner.mshrIdx, WaitSt, LLCRqSlot {
                         way: cSlot.way,
                         repTag: cSlot.repTag,
@@ -1373,7 +1379,7 @@ module mkLLBank#(
         else begin
             // does not match any cRq, so just deq pipe & write ram
             $display("%t LL %m pipelineResp: cRs: no owner: ", $time);
-            pipeline.deqWrite(Invalid, ram);
+            pipeline.deqWrite(Invalid, ram, False);
         end
     endrule
 

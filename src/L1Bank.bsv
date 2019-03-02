@@ -100,8 +100,8 @@ module mkL1Bank#(
     Alias#(cRqIdxT, Bit#(TLog#(cRqNum))),
     Alias#(pRqIdxT, Bit#(TLog#(pRqNum))),
     Alias#(cacheOwnerT, Maybe#(cRqIdxT)), // actually owner cannot be pRq
-    Alias#(cacheInfoT, CacheInfo#(tagT, Msi, void, cacheOwnerT)),
-    Alias#(ramDataT, RamData#(tagT, Msi, void, cacheOwnerT, Line)),
+    Alias#(cacheInfoT, CacheInfo#(tagT, Msi, void, cacheOwnerT, void)),
+    Alias#(ramDataT, RamData#(tagT, Msi, void, cacheOwnerT, void, Line)),
     Alias#(procRqT, ProcRq#(procRqIdT)),
     Alias#(cRqToPT, CRqMsg#(wayT, void)),
     Alias#(cRsToPT, CRsMsg#(void)),
@@ -110,7 +110,7 @@ module mkL1Bank#(
     Alias#(pRqRsFromPT, PRqRsMsg#(wayT, void)),
     Alias#(cRqSlotT, L1CRqSlot#(wayT, tagT)), // cRq MSHR slot
     Alias#(l1CmdT, L1Cmd#(indexT, cRqIdxT, pRqIdxT)),
-    Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, void, cacheOwnerT, Line, l1CmdT)),
+    Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, void, cacheOwnerT, void, Line, l1CmdT)),
     // requirements
     Bits#(procRqIdT, _procRqIdT),
     FShow#(procRqIdT),
@@ -465,10 +465,11 @@ module mkL1Bank#(
                     // req M and hit E.
                     cs: max(ram.info.cs, req.toState),
                     dir: ?,
-                    owner: succ
+                    owner: succ,
+                    other: ?
                 },
                 line: newLine // write new data into cache
-            });
+            }, True); // hit, so update rep info
             $display("%t L1 %m pipelineResp: Hit func: update ram: ", $time,
                 fshow(newLine), " ; ",
                 fshow(succ)
@@ -503,10 +504,11 @@ module mkL1Bank#(
                 tag: getTag(req.addr), // should be the same as original tag
                 cs: M, // AMO always gets to M
                 dir: ?,
-                owner: succ
+                owner: succ,
+                other: ?
             },
             line: newLine // write new data into cache
-        });
+        }, True); // hit, so update rep info
         doAssert(req.toState == M, "AMO must req for M");
         $display("%t L1 %m processAmo: update ram: ", $time,
             fshow(newLine), " ; ",
@@ -554,10 +556,11 @@ module mkL1Bank#(
                     tag: getTag(procRq.addr), // tag may be garbage if cs == I
                     cs: ram.info.cs,
                     dir: ?,
-                    owner: Valid (n) // owner is req itself
+                    owner: Valid (n), // owner is req itself
+                    other: ?
                 },
                 line: ram.line
-            });
+            }, False);
         endaction
         endfunction
 
@@ -570,10 +573,11 @@ module mkL1Bank#(
                     tag: getTag(procRq.addr), // set to req tag (old tag is replaced right now)
                     cs: I,
                     dir: ?,
-                    owner: Valid (n) // owner is req itself
+                    owner: Valid (n), // owner is req itself
+                    other: ?
                 },
                 line: ? // data is no longer used
-            });
+            }, False);
             // update MSHR: may save replaced line data
             cRqMshr.pipelineResp.setStateSlot(n, WaitNewTag, L1CRqSlot {
                 way: pipeOut.way, // use way from pipeline
@@ -596,7 +600,7 @@ module mkL1Bank#(
         function Action cRqSetDepNoCacheChange;
         action
             cRqMshr.pipelineResp.setStateSlot(n, Depend, defaultValue);
-            pipeline.deqWrite(Invalid, pipeOut.ram);
+            pipeline.deqWrite(Invalid, pipeOut.ram, False);
         endaction
         endfunction
 
@@ -699,7 +703,7 @@ module mkL1Bank#(
             // pRq can be directly dropped
             // must go through tag match, no successor
             pRqMshr.pipelineResp.releaseEntry(n);
-            pipeline.deqWrite(Invalid, pipeOut.ram);
+            pipeline.deqWrite(Invalid, pipeOut.ram, False);
             // sanity check (ram.info.tag != getTag(pRq.addr) is useless)
             if(!pipeOut.pRqMiss) begin
                 doAssert(ram.info.cs == S && pRq.toState == S && ram.info.tag == getTag(pRq.addr),
@@ -728,10 +732,11 @@ module mkL1Bank#(
                     tag: ram.info.tag, // keep tag the same (for sake of cRq)
                     cs: I, // downgraded to I
                     dir: ?,
-                    owner: ram.info.owner // keep owner to cRq
+                    owner: ram.info.owner, // keep owner to cRq
+                    other: ?
                 },
                 line: ram.line
-            });
+            }, False);
             rsToPIndexQ.enq(PRq (n));
             // update cRq bookkeeping
             cRqMshr.pipelineResp.setStateSlot(cOwner, WaitSt, L1CRqSlot {
@@ -757,10 +762,11 @@ module mkL1Bank#(
                     tag: ram.info.tag,
                     cs: pRq.toState,
                     dir: ?,
-                    owner: Invalid // no successor
+                    owner: Invalid, // no successor
+                    other: ?
                 },
                 line: ram.line
-            });
+            }, False);
             rsToPIndexQ.enq(PRq (n));
         end
 
@@ -806,10 +812,11 @@ module mkL1Bank#(
                 tag: ?,
                 cs: I, // downgraded to I
                 dir: ?,
-                owner: Invalid // no successor
+                owner: Invalid, // no successor
+                other: ?
             },
             line: ?
-        });
+        }, False);
 
         // always reset link addr
         linkAddr <= Invalid;

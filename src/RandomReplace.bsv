@@ -23,6 +23,30 @@
 
 import Vector::*;
 import CCTypes::*;
+import RWBramCore::*;
+
+// random replace does not need any bookkeeping
+typedef void RandRepInfo;
+
+function RandRepInfo randRepInitInfo;
+    return ?;
+endfunction
+
+module mkRandRepRam(RWBramCore#(indexT, RandRepInfo));
+    Fifo#(1, void) rdReqQ <- mkPipelineFifo;
+
+    method Action wrReq(indexT a, RandRepInfo d);
+        noAction;
+    endmethod
+    method Action rdReq(indexT a);
+        rdReqQ.enq(?);
+    endmethod
+    method RandRepInfo rdResp if(rdReqQ.notEmpty);
+        return ?;
+    endmethod
+    method rdRespValid = rdReqQ.notEmpty;
+    method deqRdResp = rdReq.deq;
+endmodule
 
 interface RandomReplace#(numeric type wayNum);
     // find a way to replace, which is not locked
@@ -62,3 +86,4 @@ module mkRandomReplace(RandomReplace#(wayNum)) provisos(
         return repWay;
     endmethod
 endmodule
+

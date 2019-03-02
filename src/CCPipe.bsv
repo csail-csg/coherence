@@ -29,7 +29,8 @@ import FShow::*;
 import Types::*;
 import CCTypes::*;
 
-// general type param ordering: way < index < tag < msi < dir < owner < line < pipeCmd
+// general type param ordering: way < index < tag < msi < dir < owner < other < rep < line < pipeCmd
+
 typedef union tagged {
     void Invalid;
     msiT DownDir; // cRs downgraded toState
@@ -41,8 +42,20 @@ typedef struct {
     // tag match & ram output
     wayT way;
     Bool pRqMiss; // pRq miss, valid only if go through tag match
-    RamData#(tagT, msiT, dirT, ownerT, lineT) ram;
-} PipeOut#(type wayT, type tagT, type msiT, type dirT, type ownerT, type lineT, type pipeCmdT) deriving(Bits, Eq, FShow);
+    RamData#(tagT, msiT, dirT, ownerT, otherT, lineT) ram;
+    // replace info, actually not needed, just output for debug purposes
+    repT repInfo;
+} PipeOut#(
+    type wayT,
+    type tagT,
+    type msiT,
+    type dirT,
+    type ownerT,
+    type otherT,
+    type repT,
+    type lineT,
+    type pipeCmdT
+) deriving(Bits, Eq, FShow);
 
 interface CCPipe#(
     numeric type wayNum,
@@ -51,15 +64,21 @@ interface CCPipe#(
     type msiT,
     type dirT,
     type ownerT,
+    type otherT,
+    type repT,
     type lineT,
     type pipeCmdT
 );
     method Action enq(pipeCmdT cmd, Maybe#(lineT) respLine, RespState#(msiT) toState);
     method Bool notFull;
-    method PipeOut#(Bit#(TLog#(wayNum)), tagT, msiT, dirT, ownerT, lineT, pipeCmdT) first;
-    method PipeOut#(Bit#(TLog#(wayNum)), tagT, msiT, dirT, ownerT, lineT, pipeCmdT) unguard_first;
+    method PipeOut#(Bit#(TLog#(wayNum)), tagT, msiT, dirT, ownerT, otherT, repT, lineT, pipeCmdT) first;
+    method PipeOut#(Bit#(TLog#(wayNum)), tagT, msiT, dirT, ownerT, otherT, repT, lineT, pipeCmdT) unguard_first;
     method Bool notEmpty;
-    method Action deqWrite(Maybe#(pipeCmdT) newCmd, RamData#(tagT, msiT, dirT, ownerT, lineT) wrRam);
+    method Action deqWrite(
+        Maybe#(pipeCmdT) newCmd,
+        RamData#(tagT, msiT, dirT, ownerT, otherT, lineT) wrRam,
+        Bool updateRep // update replacement info
+    );
     // empty signal when we need to flush self-invalidate cache
     method Bool empty_for_flush;
 endinterface
@@ -73,11 +92,22 @@ endinterface
 typedef struct {
     pipeCmdT cmd;
     // bypasses
-    Vector#(wayNum, Maybe#(CacheInfo#(tagT, msiT, dirT, ownerT))) infoVec;
+    Vector#(wayNum, Maybe#(CacheInfo#(tagT, msiT, dirT, ownerT, otherT))) infoVec;
+    Maybe#(repT) repInfo; // replacement info for the whole set
     // CRs/PRs info
     Maybe#(lineT) respLine;
     RespState#(msiT) toState;
-} Enq2Match#(numeric type wayNum, type tagT, type msiT, type dirT, type ownerT, type lineT, type pipeCmdT) deriving(Bits, Eq);
+} Enq2Match#(
+    numeric type wayNum,
+    type tagT,
+    type msiT,
+    type dirT,
+    type ownerT,
+    type otherT,
+    type repT,
+    type lineT,
+    type pipeCmdT
+) deriving(Bits, Eq, FShow);
 
 typedef struct {
     pipeCmdT cmd;
@@ -87,62 +117,99 @@ typedef struct {
     // RAM outputs
     // cs is merged with PRs toState
     // dir is merged with CRs toState
-    CacheInfo#(tagT, msiT, dirT, ownerT) info;
+    CacheInfo#(tagT, msiT, dirT, ownerT, otherT) info;
+    repT repInfo;
     // bypassed or resp line
     Maybe#(lineT) line;
-} Match2Out#(type wayT, type tagT, type msiT, type dirT, type ownerT, type lineT, type pipeCmdT) deriving(Bits, Eq);
+} Match2Out#(
+    type wayT,
+    type tagT,
+    type msiT,
+    type dirT,
+    type ownerT,
+    type otherT,
+    type repT,
+    type lineT,
+    type pipeCmdT
+) deriving(Bits, Eq, FShow);
 
 typedef struct {
     indexT index;
     wayT way;
-    RamData#(tagT, msiT, dirT, ownerT, lineT) ram; // data to write into RAM
-} BypassInfo#(type wayT, type indexT, type tagT, type msiT, type dirT, type lineT, type ownerT) deriving(Bits, Eq);
+    RamData#(tagT, msiT, dirT, ownerT, otherT, lineT) ram; // data to write into RAM
+    repT repInfo; // replacement info write into RAM
+} BypassInfo#(
+    type wayT,
+    type indexT,
+    type tagT,
+    type msiT,
+    type dirT,
+    type ownerT,
+    type otherT,
+    type repT,
+    type lineT,
+) deriving(Bits, Eq, FShow);
 
 typedef struct {
     wayT way;
     Bool pRqMiss;
-} TagMatchResult#(type wayT) deriving(Bits, Eq);
+} TagMatchResult#(type wayT) deriving(Bits, Eq, FShow);
+
+typedef struct {
+    msiT cs;
+} UpdateByUpCs#(type msiT) deriving(Bits, Eq, FShow);
+
+typedef struct {
+    msiT cs;
+    dirT dir;
+} UpdateByDownDir#(type msiT, type dirT) deriving(Bits, Eq, FShow);
 
 module mkCCPipe#(
     ReadOnly#(Bool) initDone,
     function indexT getIndex(pipeCmdT cmd),
     function ActionValue#(TagMatchResult#(wayT)) tagMatch(
         // actionvalue enable us to do checking inside the function
-        pipeCmdT cmd, 
+        pipeCmdT cmd,
         // below are current RAM outputs, is merged with ram write from final stage
         // but is NOT merged with state changes carried in PRs/CRs 
-        Vector#(wayNum, tagT) tagVec, 
-        Vector#(wayNum, msiT) csVec, 
-        Vector#(wayNum, ownerT) ownerVec
+        Vector#(wayNum, tagT) tagVec,
+        Vector#(wayNum, msiT) csVec,
+        Vector#(wayNum, ownerT) ownerVec,
+        repT repInfo
     ),
-    function ActionValue#(dirT) updateChildDir(pipeCmdT cmd, msiT toState, dirT oldDir), // get new dir for CRs
-    function Action checkUpPRsDataValid(msiT cs, Bool dataValid),
-    function Action checkDownCRsDataValid(pipeCmdT cmd, dirT dir, Bool dataValid)
-)(
+    function ActionValue#(UpdateByUpCs) updateByUpCs(
+        pipeCmdT cmd, msiT toState, Bool dataValid, msiT oldCs
+    ),
+    function ActionValue#(UpdateByDownDir) updateByDownDir(
+        pipeCmdT cmd, msiT toState, Bool dataValid, msiT oldCs, dirT oldDir
+    );
+    function ActionValue#(repT) updateRepInfo(repT oldRep, wayT hitWay),
     Vector#(wayNum, RWBramCore#(indexT, infoT)) infoRam,
-    RWBramCore#(dataIndexT, lineT) dataRam,
-    CCPipe#(wayNum, indexT, tagT, msiT, dirT, ownerT, lineT, pipeCmdT) ifc
+    RWBramCore#(indexT, repT) repRam,
+    RWBramCore#(dataIndexT, lineT) dataRam
+)(
+    CCPipe#(wayNum, indexT, tagT, msiT, dirT, ownerT, otherT, repT, lineT, pipeCmdT)
 ) provisos (
     Alias#(wayT, Bit#(TLog#(wayNum))),
-    Alias#(infoT, CacheInfo#(tagT, msiT, dirT, ownerT)),
-    Alias#(ramDataT, RamData#(tagT, msiT, dirT, ownerT, lineT)),
+    Alias#(infoT, CacheInfo#(tagT, msiT, dirT, ownerT, otherT)),
+    Alias#(ramDataT, RamData#(tagT, msiT, dirT, ownerT, otherT, lineT)),
     Alias#(respStateT, RespState#(msiT)),
-    Alias#(pipeOutT, PipeOut#(wayT, tagT, msiT, dirT, ownerT, lineT, pipeCmdT)),
-    Alias#(enq2MatchT, Enq2Match#(wayNum, tagT, msiT, dirT, ownerT, lineT, pipeCmdT)),
-    Alias#(match2OutT, Match2Out#(wayT, tagT, msiT, dirT, ownerT, lineT, pipeCmdT)),
-    Alias#(bypassInfoT, BypassInfo#(wayT, indexT, tagT, msiT, dirT, lineT, ownerT)),
+    Alias#(pipeOutT, PipeOut#(wayT, tagT, msiT, dirT, ownerT, otherT, repT, lineT, pipeCmdT)),
+    Alias#(enq2MatchT, Enq2Match#(wayNum, tagT, msiT, dirT, ownerT, otherT, repT, lineT, pipeCmdT)),
+    Alias#(match2OutT, Match2Out#(wayT, tagT, msiT, dirT, ownerT, otherT, repT, lineT, pipeCmdT)),
+    Alias#(bypassInfoT, BypassInfo#(wayT, indexT, tagT, msiT, dirT, ownerT, otherT, repT, lineT)),
     Bits#(indexT, _indexSz),
     Bits#(tagT, _tagSz),
     Bits#(msiT, _msiSz),
     Bits#(dirT, _dirSz),
     Bits#(ownerT, _ownerSz),
+    Bits#(otherT, _otherSz),
+    Bits#(repT, _repSz),
     Bits#(lineT, _lineSz),
     Bits#(pipeCmdT, _pipeCmdSz),
     Eq#(indexT),
     // index to data ram: {way, normal index}
-    Alias#(dataIndexT, Bit#(TAdd#(TLog#(wayNum), _indexSz))),
-    // FIXME this is a hack: we force msiT to be Msi (MESI)
-    Alias#(msiT, Msi)
+    Alias#(dataIndexT, Bit#(TAdd#(TLog#(wayNum), _indexSz)))
 );
 
     // pipeline regs
@@ -176,6 +243,7 @@ module mkCCPipe#(
         enq2MatchT e2m = fromMaybe(?, enq2Mat_bypass);
         if(b.index == getIndex(e2m.cmd)) begin
             e2m.infoVec[b.way] = Valid (b.ram.info);
+            e2m.repInfo = Valid (b.repInfo);
         end
         enq2Mat_bypass <= Valid (e2m);
     endrule
@@ -183,49 +251,50 @@ module mkCCPipe#(
     rule doTagMatch(isValid(enq2Mat_match) && !isValid(mat2Out_match) && initDone);
         enq2MatchT e2m = fromMaybe(?, enq2Mat_match);
         // get cache output & merge with bypass
-        Vector#(wayNum, infoT) infoVec = ?;
+        Vector#(wayNum, infoT) infoVec;
         for(Integer i = 0; i < valueOf(wayNum); i = i+1) begin
             infoRam[i].deqRdResp;
             infoVec[i] = fromMaybe(infoRam[i].rdResp, e2m.infoVec[i]);
         end
+        repRam.deqRdResp;
+        repT repInfo = fromMaybe(repRam[i].rdResp, e2m.repInfo);
         // do tag match to get way to occupy
-        Vector#(wayNum, tagT) tagVec = ?;
-        Vector#(wayNum, msiT) csVec = ?;
-        Vector#(wayNum, ownerT) ownerVec = ?;
+        Vector#(wayNum, tagT) tagVec;
+        Vector#(wayNum, msiT) csVec;
+        Vector#(wayNum, ownerT) ownerVec;
         for(Integer i = 0; i < valueOf(wayNum); i = i+1) begin
             tagVec[i] = infoVec[i].tag;
             csVec[i] = infoVec[i].cs;
             ownerVec[i] = infoVec[i].owner;
         end
-        let tmRes <- tagMatch(e2m.cmd, tagVec, csVec, ownerVec);
+        let tmRes <- tagMatch(e2m.cmd, tagVec, csVec, ownerVec, repInfo);
         wayT way = tmRes.way;
         Bool pRqMiss = tmRes.pRqMiss;
         // read data
         indexT index = getIndex(e2m.cmd);
         dataRam.rdReq(getDataIndex(way, index));
-        // set mat2out & merge with CRs/PRs & merge with bypass
-        // resp info has higher priority than bypass
+        // set mat2out & merge with CRs/PRs & merge with data bypass
+        // resp data has higher priority than data bypass
         match2OutT m2o = Match2Out {
             cmd: e2m.cmd,
             way: way,
             pRqMiss: pRqMiss,
             info: infoVec[way],
+            repInfo: repInfo,
             line: e2m.respLine
         };
         if(e2m.toState matches tagged UpCs .s) begin
-            checkUpPRsDataValid(m2o.info.cs, isValid(e2m.respLine)); // sanity check on data
-            m2o.info.cs = s;
+            UpdateByUpCs upd <- updateByUpCs(
+                e2m.cmd, s, isValid(e2m.respLine), m2o.info.cs
+            );
+            m2o.info.cs = upd.cs;
         end
-        if(e2m.toState matches tagged DownDir .s) begin
-            checkDownCRsDataValid(m2o.cmd, m2o.info.dir, isValid(e2m.respLine)); // sanity check on data
-            m2o.info.dir <- updateChildDir(m2o.cmd, s, m2o.info.dir);
-            // XXX since child can upgrade from E to M silently, use whether
-            // respLine is valid to determine if we need to upgrade to M. Also
-            // note that respLine field has not been overwritten by bypass.
-            if(isValid(e2m.respLine)) begin
-                doAssert(m2o.info.cs >= E, "must be >= E");
-                m2o.info.cs = M;
-            end
+        else if(e2m.toState matches tagged DownDir .s) begin
+            UpdateByDownDir upd <- updateByDownDir(
+                e2m.cmd, s, isValid(e2m.respLine), m2o.info.cs, m2o.info.dir
+            );
+            m2o.info.cs = upd.cs;
+            m2o.info.dir = upd.dir;
         end
         if(bypass.wget matches tagged Valid .b &&& b.index == index &&& b.way == way &&& !isValid(m2o.line)) begin
             // bypass has lower priority than resp data
@@ -246,7 +315,8 @@ module mkCCPipe#(
             ram: RamData {
                 info: m2o.info,
                 line: fromMaybe(dataRam.rdResp, m2o.line)
-            }
+            },
+            repInfo: m2o.repInfo
         };
     endfunction
 
@@ -254,22 +324,25 @@ module mkCCPipe#(
 
     Bool deq_guard = isValid(mat2Out_out) && initDone;
 
-    // stage 1: enq req to pipeline: access info RAM & bypass
+    // stage 1: enq req to pipeline: access info+rep RAM & bypass
     method Action enq(pipeCmdT cmd, Maybe#(lineT) respLine, respStateT toState) if(enq_guard);
         // read ram
         indexT index = getIndex(cmd);
         for(Integer i = 0; i < valueOf(wayNum); i = i+1) begin
             infoRam[i].rdReq(index);
         end
+        repRam.rdReq(index);
         // write reg & get bypass
         enq2MatchT e2m = Enq2Match {
             cmd: cmd,
             infoVec: replicate(Invalid),
+            repInfo: Invalid,
             respLine: respLine,
             toState: toState
         };
         if(bypass.wget matches tagged Valid .b &&& b.index == index) begin
             e2m.infoVec[b.way] = Valid (b.ram.info);
+            e2m.repInfo = Valid (b.repInfo);
         end
         enq2Mat_enq <= Valid (e2m);
     endmethod
@@ -286,28 +359,35 @@ module mkCCPipe#(
 
     method Bool notEmpty = deq_guard;
 
-    method Action deqWrite(Maybe#(pipeCmdT) newCmd, ramDataT wrRam) if(deq_guard);
+    method Action deqWrite(Maybe#(pipeCmdT) newCmd, ramDataT wrRam, Bool updateRep) if(deq_guard);
         match2OutT m2o = fromMaybe(?, mat2Out_out);
         wayT way = m2o.way;
         indexT index = getIndex(m2o.cmd);
+        // update replacement info
+        repT repInfo = m2o.repInfo;
+        if(updateRep) begin
+            repInfo <- updateRepPolicy(m2o.repInfo, way);
+        end
         // write ram
         infoRam[way].wrReq(index, wrRam.info);
+        repRam.wrReq(index, repInfo);
         dataRam.wrReq(getDataIndex(way, index), wrRam.line);
         // set bypass to Enq and Match stages
         bypass.wset(BypassInfo {
             index: index,
             way: way,
-            ram: wrRam
+            ram: wrRam,
+            repInfo: repInfo
         });
         // change pipeline reg
         if(newCmd matches tagged Valid .cmd) begin
             // update pipeline reg
-            m2o.pRqMiss = False;
             mat2Out_out <= Valid (Match2Out {
                 cmd: cmd, // swapped in new cmd
-                way: m2o.way, // keep way same
+                way: way, // keep way same
                 pRqMiss: False, // reset (not valid for swapped in pRq)
                 info: wrRam.info, // get bypass
+                repInfo: repInfo, // get bypass
                 line: Valid (wrRam.line) // get bypass
             });
         end

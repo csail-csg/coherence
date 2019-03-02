@@ -74,18 +74,19 @@ interface LLPipe#(
     method PipeOut#(
         Bit#(TLog#(wayNum)),
         tagT, Msi, Vector#(childNum, Msi),
-        Maybe#(CRqOwner#(cRqIdxT)),
+        Maybe#(CRqOwner#(cRqIdxT)), void, RandRepInfo, // no other
         Line, LLCmd#(Bit#(TLog#(childNum)), cRqIdxT)
     ) first;
     method PipeOut#(
         Bit#(TLog#(wayNum)),
         tagT, Msi, Vector#(childNum, Msi),
-        Maybe#(CRqOwner#(cRqIdxT)),
+        Maybe#(CRqOwner#(cRqIdxT)), void, RandRepInfo, // no other
         Line, LLCmd#(Bit#(TLog#(childNum)), cRqIdxT)
     ) unguard_first;
     method Action deqWrite(
         Maybe#(cRqIdxT) swapRq,
-        RamData#(tagT, Msi, Vector#(childNum, Msi), Maybe#(CRqOwner#(cRqIdxT)), Line) wrRam // always write BRAM
+        RamData#(tagT, Msi, Vector#(childNum, Msi), Maybe#(CRqOwner#(cRqIdxT)), Line) wrRam, // always write BRAM
+        Bool updateRep
     );
 endinterface
 
@@ -117,14 +118,18 @@ module mkLLPipe(
     Alias#(wayT, Bit#(TLog#(wayNum))),
     Alias#(dirT, Vector#(childNum, Msi)),
     Alias#(ownerT, Maybe#(CRqOwner#(cRqIdxT))),
+    Alias#(otherT, void), // no other cache info
+    Alias#(repT, RandRepInfo), // use random replace
     Alias#(pipeInT, LLPipeIn#(childT, wayT, cRqIdxT)),
     Alias#(pipeCmdT, LLPipeCmd#(childT, wayT, cRqIdxT)),
     Alias#(llCmdT, LLCmd#(childT, cRqIdxT)),
-    Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, dirT, ownerT, Line, llCmdT)), // output type
-    Alias#(infoT, CacheInfo#(tagT, Msi, dirT, ownerT)),
-    Alias#(ramDataT, RamData#(tagT, Msi, dirT, ownerT, Line)),
+    Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, dirT, ownerT, otherT, repT, Line, llCmdT)), // output type
+    Alias#(infoT, CacheInfo#(tagT, Msi, dirT, ownerT, otherT)),
+    Alias#(ramDataT, RamData#(tagT, Msi, dirT, ownerT, otherT, Line)),
     Alias#(respStateT, RespState#(Msi)),
     Alias#(tagMatchResT, TagMatchResult#(wayT)),
+    Alias#(updateByUpCsT, UpdateByUpCs#(Msi)),
+    Alias#(updateByDownDirT, UpdateByDownDir#(Msi, dirT)),
     Alias#(dataIndexT, Bit#(TAdd#(TLog#(wayNum), indexSz))),
     // requirement 
     Alias#(indexT, Bit#(indexSz)),
@@ -135,6 +140,7 @@ module mkLLPipe(
 );
     // RAMs
     Vector#(wayNum, RWBramCore#(indexT, infoT)) infoRam <- replicateM(mkRWBramCore);
+    RWBramCore#(indexT, repT) repRam <- mkRandRepRam;
     RWBramCore#(dataIndexT, Line) dataRam <- mkRWBramCore;
     
     // initialize RAM
@@ -150,6 +156,7 @@ module mkLLPipe(
                 owner: Invalid
             });
         end
+        repRam.wrReq(initIndex, randRepInitInfo); // useless for random replace
         initIndex <= initIndex + 1;
         if(initIndex == maxBound) begin
             initDone <= True;
@@ -238,50 +245,61 @@ module mkLLPipe(
         endactionvalue;
     endfunction
 
-    function ActionValue#(dirT) updateChildDir(pipeCmdT cmd, Msi toState, dirT oldDir);
+    function ActionValue#(updateByUpCsT) updateByUpCs(
+        pipeCmdT cmd, Msi toState, Bool dataV, Msi oldCs
+    );
     actionvalue
-        if(cmd matches tagged CRs .cRs) begin
-            dirT newDir = oldDir;
-            newDir[cRs.child] = toState;
-            return newDir;
-        end
-        else begin
-            doAssert(False, "only cRs updates dir");
-            return oldDir; // should not happen
-        end
+        doAssert(toState > oldCs, "should truly upgrade cs");
+        doAssert((oldCs == I) && dataV, "LLC mRs always has data");
+        return UpdateByUpCs {cs: toState};
     endactionvalue
     endfunction
 
-    function Action checkUpMRsDataValid(Msi cs, Bool dataV);
-    action
-        doAssert((cs == I) && dataV, ("LLC mRs always has data"));
-    endaction
-    endfunction
-
-    function Action checkDownCRsDataValid(pipeCmdT cmd, dirT dir, Bool dataV);
-    action
+    function ActionValue#(updateByDownDirT) updateByDownDir(
+        pipeCmdT cmd, Msi toState, Bool dataV, Msi oldCs, dirT oldDir
+    );
+    actionvalue
         if(cmd matches tagged CRs .cRs) begin
             if(dataV) begin
-                doAssert(dir[cRs.child] >= E, "cRs with data, dir must be >= E");
+                doAssert(dir[cRs.child] >= E, "cRs with data, dir must >= E");
             end
             else begin
                 doAssert(dir[cRs.child] < M, "cRs without data, dir must < M");
             end
+            dirT newDir = oldDir;
+            newDir[cRs.child] = toState;
+            // XXX since child can upgrade from E to M silently, use data valid
+            // to determine if we need to upgrade to M. Note that the data
+            // valid field has not been overwritten by bypass in CCPipe.
+            Msi newCs = oldCs;
+            if(dataV) begin
+                doAssert(oldCs >= E, "cRs has data, cs must >= E");
+                newCs = M;
+            end
+            return UpdateByDownDir {cs: newCs, dir: newDir};
         end
         else begin
-            doAssert(False, "only cRs calls this");
+            // should not happen
+            doAssert(False, "only cRs updates dir");
+            return ?;
         end
-    endaction
+    endactionvalue
     endfunction
 
-    CCPipe#(wayNum, indexT, tagT, Msi, dirT, ownerT, Line, pipeCmdT) pipe <- mkCCPipe(
-        regToReadOnly(initDone), getIndex, tagMatch, updateChildDir, 
-        checkUpMRsDataValid, checkDownCRsDataValid,
-        infoRam, dataRam
+    function ActionValue#(repT) updateRepInfo(repT r, wayT w);
+    actionvalue
+        return ?; // random replace does not have bookkeeping
+    endactionvalue
+    endfunction
+
+    CCPipe#(wayNum, indexT, tagT, Msi, dirT, ownerT, otherT, repT, Line, pipeCmdT) pipe <- mkCCPipe(
+        regToReadOnly(initDone), getIndex, tagMatch,
+        updateByUpCs, updateByDownDir, updateRepInfo,
+        infoRam, repRam, dataRam
     );
 
     // get first output from CCPipe output
-    function pipeOutT getFirst(PipeOut#(wayT, tagT, Msi, dirT, ownerT, Line, pipeCmdT) pout);
+    function pipeOutT getFirst(PipeOut#(wayT, tagT, Msi, dirT, ownerT, otherT, repT, Line, pipeCmdT) pout);
         return PipeOut {
             cmd: (case(pout.cmd) matches
                 tagged CRq .rq: LLCRq (rq.mshrIdx);
@@ -291,7 +309,8 @@ module mkLLPipe(
             endcase),
             way: pout.way,
             pRqMiss: pout.pRqMiss,
-            ram: pout.ram
+            ram: pout.ram,
+            repInfo: pout.repInfo
         };
     endfunction
 
@@ -326,7 +345,7 @@ module mkLLPipe(
 
     method notEmpty = pipe.notEmpty;
 
-    method Action deqWrite(Maybe#(cRqIdxT) swapRq, ramDataT wrRam);
+    method Action deqWrite(Maybe#(cRqIdxT) swapRq, ramDataT wrRam, Bool updateRep);
         // get new cmd
         Addr addr = getAddrFromCmd(pipe.first.cmd); // inherit addr
         Maybe#(pipeCmdT) newCmd = Invalid;
@@ -334,6 +353,6 @@ module mkLLPipe(
             newCmd = Valid (CRq (LLPipeCRqIn {addr: addr, mshrIdx: idx}));
         end
         // call pipe
-        pipe.deqWrite(newCmd, wrRam);
+        pipe.deqWrite(newCmd, wrRam, updateRep);
     endmethod
 endmodule

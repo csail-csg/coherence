@@ -259,30 +259,31 @@ module mkLLPipe(
         pipeCmdT cmd, Msi toState, Bool dataV, Msi oldCs, dirT oldDir
     );
     actionvalue
+        // update dir
+        dirT newDir = oldDir;
         if(cmd matches tagged CRs .cRs) begin
             if(dataV) begin
-                doAssert(dir[cRs.child] >= E, "cRs with data, dir must >= E");
+                doAssert(oldDir[cRs.child] >= E, "cRs with data, dir must >= E");
             end
             else begin
-                doAssert(dir[cRs.child] < M, "cRs without data, dir must < M");
+                doAssert(oldDir[cRs.child] < M, "cRs without data, dir must < M");
             end
-            dirT newDir = oldDir;
             newDir[cRs.child] = toState;
-            // XXX since child can upgrade from E to M silently, use data valid
-            // to determine if we need to upgrade to M. Note that the data
-            // valid field has not been overwritten by bypass in CCPipe.
-            Msi newCs = oldCs;
-            if(dataV) begin
-                doAssert(oldCs >= E, "cRs has data, cs must >= E");
-                newCs = M;
-            end
-            return UpdateByDownDir {cs: newCs, dir: newDir};
         end
         else begin
             // should not happen
             doAssert(False, "only cRs updates dir");
-            return ?;
         end
+        // update cs
+        // XXX since child can upgrade from E to M silently, use data valid
+        // to determine if we need to upgrade to M. Note that the data
+        // valid field has not been overwritten by bypass in CCPipe.
+        Msi newCs = oldCs;
+        if(dataV) begin
+            doAssert(oldCs >= E, "cRs has data, cs must >= E");
+            newCs = M;
+        end
+        return UpdateByDownDir {cs: newCs, dir: newDir};
     endactionvalue
     endfunction
 

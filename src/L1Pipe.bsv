@@ -300,7 +300,7 @@ module mkL1Pipe(
     );
     actionvalue
         doAssert(False, "L1 does not have dir");
-        return ?;
+        return UpdateByDownDir {cs: oldCs, dir: oldDir};
     endactionvalue
     endfunction
 

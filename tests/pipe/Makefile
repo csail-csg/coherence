@@ -23,9 +23,12 @@
 
 EXTPATH = -p +:../include:../../src:../../../procs/lib
 
-TARGETS = Pipe IntPipe L1Pipe LLPipe
+TARGETS = Pipe
+#IntPipe L1Pipe LLPipe
 
 MACROS = -D CCSIZES_FILE=\"L1L2LLSizes.bsv\"
+
+LINK_JOBS ?= 8
 
 $(TARGETS): %:
 	mkdir -p build$@Dir
@@ -45,6 +48,9 @@ $(TARGETS): %:
 		-bdir build$@Dir \
 		-info-dir build$@Dir \
 		-simdir build$@Dir \
+		-Xc -std=c99 \
+		-Xc++ -D_GLIBCXX_USE_CXX11_ABI=0 \
+		-parallel-sim-link $(LINK_JOBS) \
 		-o sim$@ build$@Dir/*.ba
 
 

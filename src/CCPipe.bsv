@@ -147,7 +147,7 @@ typedef struct {
     type ownerT,
     type otherT,
     type repT,
-    type lineT,
+    type lineT
 ) deriving(Bits, Eq, FShow);
 
 typedef struct {
@@ -164,6 +164,15 @@ typedef struct {
     dirT dir;
 } UpdateByDownDir#(type msiT, type dirT) deriving(Bits, Eq, FShow);
 
+// index to data ram: {way, normal index}
+function dataIndexT getDataRamIndex(wayT w, indexT i) provisos(
+    Alias#(wayT, Bit#(_waySz)),
+    Alias#(indexT, Bit#(_indexSz)),
+    Alias#(dataIndexT, Bit#(TAdd#(_waySz, _indexSz)))
+);
+    return {w, i};
+endfunction
+
 module mkCCPipe#(
     ReadOnly#(Bool) initDone,
     function indexT getIndex(pipeCmdT cmd),
@@ -177,12 +186,12 @@ module mkCCPipe#(
         Vector#(wayNum, ownerT) ownerVec,
         repT repInfo
     ),
-    function ActionValue#(UpdateByUpCs) updateByUpCs(
+    function ActionValue#(UpdateByUpCs#(msiT)) updateByUpCs(
         pipeCmdT cmd, msiT toState, Bool dataValid, msiT oldCs
     ),
-    function ActionValue#(UpdateByDownDir) updateByDownDir(
+    function ActionValue#(UpdateByDownDir#(msiT, dirT)) updateByDownDir(
         pipeCmdT cmd, msiT toState, Bool dataValid, msiT oldCs, dirT oldDir
-    );
+    ),
     function ActionValue#(repT) updateRepInfo(repT oldRep, wayT hitWay),
     Vector#(wayNum, RWBramCore#(indexT, infoT)) infoRam,
     RWBramCore#(indexT, repT) repRam,
@@ -191,6 +200,7 @@ module mkCCPipe#(
     CCPipe#(wayNum, indexT, tagT, msiT, dirT, ownerT, otherT, repT, lineT, pipeCmdT)
 ) provisos (
     Alias#(wayT, Bit#(TLog#(wayNum))),
+    Alias#(indexT, Bit#(_indexSz)),
     Alias#(infoT, CacheInfo#(tagT, msiT, dirT, ownerT, otherT)),
     Alias#(ramDataT, RamData#(tagT, msiT, dirT, ownerT, otherT, lineT)),
     Alias#(respStateT, RespState#(msiT)),
@@ -198,7 +208,6 @@ module mkCCPipe#(
     Alias#(enq2MatchT, Enq2Match#(wayNum, tagT, msiT, dirT, ownerT, otherT, repT, lineT, pipeCmdT)),
     Alias#(match2OutT, Match2Out#(wayT, tagT, msiT, dirT, ownerT, otherT, repT, lineT, pipeCmdT)),
     Alias#(bypassInfoT, BypassInfo#(wayT, indexT, tagT, msiT, dirT, ownerT, otherT, repT, lineT)),
-    Bits#(indexT, _indexSz),
     Bits#(tagT, _tagSz),
     Bits#(msiT, _msiSz),
     Bits#(dirT, _dirSz),
@@ -207,7 +216,6 @@ module mkCCPipe#(
     Bits#(repT, _repSz),
     Bits#(lineT, _lineSz),
     Bits#(pipeCmdT, _pipeCmdSz),
-    Eq#(indexT),
     // index to data ram: {way, normal index}
     Alias#(dataIndexT, Bit#(TAdd#(TLog#(wayNum), _indexSz)))
 );
@@ -231,11 +239,6 @@ module mkCCPipe#(
     // bypass write to ram
     RWire#(bypassInfoT) bypass <- mkRWire;
 
-    // get index to dataRam
-    function dataIndexT getDataIndex(wayT w, indexT i);
-        return {w, pack(i)};
-    endfunction
-
     // stage 2: first get bypass
     (* fire_when_enabled, no_implicit_conditions *)
     rule doMatch_bypass(isValid(bypass.wget) && isValid(enq2Mat_bypass) && initDone);
@@ -257,7 +260,7 @@ module mkCCPipe#(
             infoVec[i] = fromMaybe(infoRam[i].rdResp, e2m.infoVec[i]);
         end
         repRam.deqRdResp;
-        repT repInfo = fromMaybe(repRam[i].rdResp, e2m.repInfo);
+        repT repInfo = fromMaybe(repRam.rdResp, e2m.repInfo);
         // do tag match to get way to occupy
         Vector#(wayNum, tagT) tagVec;
         Vector#(wayNum, msiT) csVec;
@@ -272,7 +275,7 @@ module mkCCPipe#(
         Bool pRqMiss = tmRes.pRqMiss;
         // read data
         indexT index = getIndex(e2m.cmd);
-        dataRam.rdReq(getDataIndex(way, index));
+        dataRam.rdReq(getDataRamIndex(way, index));
         // set mat2out & merge with CRs/PRs & merge with data bypass
         // resp data has higher priority than data bypass
         match2OutT m2o = Match2Out {
@@ -284,13 +287,13 @@ module mkCCPipe#(
             line: e2m.respLine
         };
         if(e2m.toState matches tagged UpCs .s) begin
-            UpdateByUpCs upd <- updateByUpCs(
+            UpdateByUpCs#(msiT) upd <- updateByUpCs(
                 e2m.cmd, s, isValid(e2m.respLine), m2o.info.cs
             );
             m2o.info.cs = upd.cs;
         end
         else if(e2m.toState matches tagged DownDir .s) begin
-            UpdateByDownDir upd <- updateByDownDir(
+            UpdateByDownDir#(msiT, dirT) upd <- updateByDownDir(
                 e2m.cmd, s, isValid(e2m.respLine), m2o.info.cs, m2o.info.dir
             );
             m2o.info.cs = upd.cs;
@@ -366,12 +369,12 @@ module mkCCPipe#(
         // update replacement info
         repT repInfo = m2o.repInfo;
         if(updateRep) begin
-            repInfo <- updateRepPolicy(m2o.repInfo, way);
+            repInfo <- updateRepInfo(m2o.repInfo, way);
         end
         // write ram
         infoRam[way].wrReq(index, wrRam.info);
         repRam.wrReq(index, repInfo);
-        dataRam.wrReq(getDataIndex(way, index), wrRam.line);
+        dataRam.wrReq(getDataRamIndex(way, index), wrRam.line);
         // set bypass to Enq and Match stages
         bypass.wset(BypassInfo {
             index: index,

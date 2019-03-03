@@ -48,6 +48,7 @@ typedef Bit#(32) Data;
 
 typedef Bit#(TLog#(WayNum)) Way;
 typedef Bit#(TLog#(IndexNum)) Index;
+typedef Bit#(TAdd#(TLog#(IndexNum), TLog#(WayNum))) DataIndex;
 
 typedef struct {
     TestId id;
@@ -62,6 +63,8 @@ typedef CacheInfo#(Tag, MsiT, Dir, Owner, Other) InfoType;
 typedef RamData#(Tag, MsiT, Dir, Owner, Other, Line) RamDataType;
 typedef RespState#(MsiT) RespStateType;
 typedef PipeOut#(Way, Tag, MsiT, Dir, Owner, Other, RepInfo, Line, PipeCmd) PipeOutType;
+typedef UpdateByUpCs#(MsiT) UpdateByUpCsT;
+typedef UpdateByDownDir#(MsiT, Dir) UpdateByDownDirT;
 
 typedef struct {
     PipeCmd cmd;
@@ -76,12 +79,6 @@ typedef struct {
     Vector#(WayNum, Owner) ownerVec;
     RepInfo repInfo;
 } TagMatchInfo deriving(Bits, Eq, FShow);
-
-typedef struct {
-    RepInfo oldInfo;
-    Way way;
-    RepInfo newInfo;
-} UpdateRepInfo deriving(Bits, Eq, FShow);
 
 typedef struct {
     Maybe#(PipeCmd) newCmd;
@@ -133,11 +130,10 @@ module mkTbPipe(Empty);
     // reference
     Vector#(IndexNum, Vector#(WayNum, Reg#(Line))) refDataRam <- replicateM(replicateM(mkReg(0)));
     Vector#(IndexNum, Vector#(WayNum, Reg#(InfoType))) refInfoRam <- replicateM(replicateM(mkReg(unpack(0))));
-    Vector#(IndexNum, Reg#(RepInfo)) refRepInfoRam <- replicateM(mkReg(0));
+    Vector#(IndexNum, Reg#(RepInfo)) refRepRam <- replicateM(mkReg(0));
 
     // Wires to record info
     RWire#(TagMatchInfo) tmInfo <- mkRWire;
-    RWire#(UpdateRepInfo) updateRepInfo <- mkRWire;
     RWire#(PipeOutType) pipeOut <- mkRWire;
     RWire#(EnqInfo) enqInfo <- mkRWire;
     RWire#(DeqInfo) deqInfo <- mkRWire;
@@ -168,9 +164,11 @@ module mkTbPipe(Empty);
     Randomize#(Line) randWrLine <- mkGenericRandomizer;
     // check ptrs
     Reg#(Index) checkIndex <- mkReg(0);
+    Reg#(Way) checkWay <- mkReg(0);
     Reg#(Bool) waitRamOut <- mkReg(False);
     // init ptr
     Reg#(Index) initIndex <- mkReg(0);
+    Reg#(Way) initWay <- mkReg(0);
 
     // test state
     Reg#(TestState) testFSM <- mkReg(Init);
@@ -206,101 +204,101 @@ module mkTbPipe(Empty);
             way: cmd.way,
             pRqMiss: cmd.pRqMiss
         };
-    endactionvalue;
-    endfunction
-
-    function ActionValue#(Dir) updateChildDir(PipeCmd cmd, MsiT s, Dir dir);
-    actionvalue
-        return dir + zeroExtend(s);
     endactionvalue
     endfunction
 
-    function Action checkPRsData(MsiT cs, Bool dataV);
-        return noAction;
+    function ActionValue#(UpdateByUpCsT) updateByUpCs(
+        PipeCmd cmd, MsiT toState, Bool dataV, MsiT oldCs
+    );
+    actionvalue
+        return UpdateByUpCs {cs: toState};
+    endactionvalue
     endfunction
 
-    function Action checkCRsData(PipeCmd cmd, Dir dir, Bool dataV);
-        return noAction;
+    function ActionValue#(UpdateByDownDirT) updateByDownDir(
+        PipeCmd cmd, MsiT toState, Bool dataV, MsiT oldCs, Dir oldDir
+    );
+    actionvalue
+        return UpdateByDownDir {
+            cs: oldCs,
+            dir: oldDir + zeroExtend(toState)
+        };
+    endactionvalue
     endfunction
 
     function ActionValue#(RepInfo) updateReplacement(RepInfo r, Way w);
     actionvalue
-        RepInfo newInfo = r + zeroExtend(w);
-        updateRepInfo.wset(UpdateRepInfo {
-            oldInfo: r,
-            way: w,
-            newInfo: newInfo
-        });
-        return newInfo;
+        return r + zeroExtend(w);
     endactionvalue
     endfunction
 
     // RAMs
     Vector#(WayNum, RWBramCore#(Index, InfoType)) infoRam <- replicateM(mkRWBramCore);
-    Vector#(WayNum, RWBramCore#(Index, Line)) dataRam <- replicateM(mkRWBramCore);
+    RWBramCore#(DataIndex, Line) dataRam <- mkRWBramCore;
     RWBramCore#(Index, RepInfo) repRam <- mkRWBramCore;
     // DUT
     ReadOnly#(Bool) initDone = (interface ReadOnly;
         method Bool _read = testFSM != Init;
     endinterface);
     CCPipe#(WayNum, Index, Tag, MsiT, Dir, Owner, Other, RepInfo, Line, PipeCmd) dutPipe <- mkCCPipe(
-        initDone, getIndex, tagMatch, updateChildDir, checkPRsData, checkCRsData, updateReplacement,
+        initDone, getIndex, tagMatch, updateByUpCs, updateByDownDir, updateReplacement,
         infoRam, repRam, dataRam
     );
 
     // log files
     Reg#(File) enqLog <- mkReg(InvalidFile);
     Reg#(File) tmLog <- mkReg(InvalidFile); // tag match
-    Reg#(File) updateRepLog <- mkReg(InvalidFile);
     Reg#(File) outLog <- mkReg(InvalidFile);
     Reg#(File) deqLog <- mkReg(InvalidFile);
     Reg#(File) checkLog <- mkReg(InvalidFile); // final ram value
 
     rule doInit(testFSM == Init);
-        for(Integer i = 0; i < valueOf(WayNum); i = i+1) begin
-            infoRam[i].wrReq(initIndex, unpack(0));
-            dataRam[i].wrReq(initIndex, 0);
-        end
-        repRam.wrreq(initIndex, 0);
-        if(initIndex < fromInteger(valueOf(IndexNum) - 1)) begin
-            initIndex <= initIndex + 1;
+        infoRam[initWay].wrReq(initIndex, unpack(0));
+        dataRam.wrReq(getDataRamIndex(initWay, initIndex), 0);
+        if(initWay < fromInteger(valueof(WayNum) - 1)) begin
+            initWay <= initWay + 1;
         end
         else begin
-            // init randomizer
-            randEnq.cntrl.init;
-            randInIndex.cntrl.init;
-            randInWay.cntrl.init;
-            randInMiss.cntrl.init;
-            randInData.cntrl.init;
-            randLineValid.cntrl.init;
-            randRespLine.cntrl.init;
-            randToStateValid.cntrl.init;
-            randRespState.cntrl.init;
-            randSwapDeq.cntrl.init;
-            randSwapData.cntrl.init;
-            randWrTag.cntrl.init;
-            randWrCs.cntrl.init;
-            randWrDir.cntrl.init;
-            randWrOwner.cntrl.init;
-            randWrOther.cntrl.init;
-            randWrUpdateRep.cntrl.init;
-            randWrLine.cntrl.init;
-            // create log files
-            File f <- $fopen("enq.log", "w");
-            enqLog <= f;
-            f <- $fopen("tm.log", "w");
-            tmLog <= f;
-            f <- $fopen("updateRep.log", "w");
-            updateRepLog <= f;
-            f <- $fopen("deq.log", "w");
-            deqLog <= f;
-            f <- $fopen("out.log", "w");
-            outLog <= f;
-            f <- $fopen("check.log", "w");
-            checkLog <= f;
-            // change state
-            testFSM <= Process;
-            $display("INFO: init done");
+            repRam.wrReq(initIndex, 0);
+            initWay <= 0;
+            if(initIndex < fromInteger(valueOf(IndexNum) - 1)) begin
+                initIndex <= initIndex + 1;
+            end
+            else begin
+                // init randomizer
+                randEnq.cntrl.init;
+                randInIndex.cntrl.init;
+                randInWay.cntrl.init;
+                randInMiss.cntrl.init;
+                randInData.cntrl.init;
+                randLineValid.cntrl.init;
+                randRespLine.cntrl.init;
+                randToStateValid.cntrl.init;
+                randRespState.cntrl.init;
+                randSwapDeq.cntrl.init;
+                randSwapData.cntrl.init;
+                randWrTag.cntrl.init;
+                randWrCs.cntrl.init;
+                randWrDir.cntrl.init;
+                randWrOwner.cntrl.init;
+                randWrOther.cntrl.init;
+                randWrUpdateRep.cntrl.init;
+                randWrLine.cntrl.init;
+                // create log files
+                File f <- $fopen("enq.log", "w");
+                enqLog <= f;
+                f <- $fopen("tm.log", "w");
+                tmLog <= f;
+                f <- $fopen("deq.log", "w");
+                deqLog <= f;
+                f <- $fopen("out.log", "w");
+                outLog <= f;
+                f <- $fopen("check.log", "w");
+                checkLog <= f;
+                // change state
+                testFSM <= Process;
+                $display("INFO: init done");
+            end
         end
     endrule
 
@@ -329,7 +327,7 @@ module mkTbPipe(Empty);
         let enq <- randEnq.next;
         if(getEnq(enq)) begin
             dutPipe.enq(cmd, respLine, toState);
-            enqInfo[0] <= Valid (EnqInfo {
+            enqInfo.wset(EnqInfo {
                 cmd: cmd,
                 respLine: respLine,
                 toState: toState
@@ -343,13 +341,16 @@ module mkTbPipe(Empty);
         let cs <- randWrCs.next;
         let dir <- randWrDir.next;
         let owner <- randWrOwner.next;
+        let other <- randWrOther.next;
+        let updRep <- randWrUpdateRep.next;
         let line <- randWrLine.next;
         RamDataType wrRam = RamData {
             info: CacheInfo {
                 tag: tag,
                 cs: cs,
                 dir: dir,
-                owner: owner
+                owner: owner,
+                other: other
             },
             line: line
         };
@@ -363,22 +364,24 @@ module mkTbPipe(Empty);
         // apply to pipe and record actions
         case(getSwapDeq(swapDeq))
             Deq: begin
-                dutPipe.deqWrite(Invalid, wrRam);
-                deqInfo[0] <= Valid (DeqInfo {
+                dutPipe.deqWrite(Invalid, wrRam, updRep);
+                deqInfo.wset(DeqInfo {
                     newCmd: Invalid,
-                    wrRam: wrRam
+                    wrRam: wrRam,
+                    updateRep: updRep
                 });
             end
             Swap: begin
-                dutPipe.deqWrite(Valid (cmd), wrRam);
-                deqInfo[0] <= Valid (DeqInfo {
+                dutPipe.deqWrite(Valid (cmd), wrRam, updRep);
+                deqInfo.wset(DeqInfo {
                     newCmd: Valid (cmd),
-                    wrRam: wrRam
+                    wrRam: wrRam,
+                    updateRep: updRep
                 });
             end
         endcase
         // record pipe out
-        pipeOut[0] <= Valid (dutPipe.first);
+        pipeOut.wset(dutPipe.first);
     endrule
 
     (* fire_when_enabled, no_implicit_conditions *)
@@ -386,7 +389,7 @@ module mkTbPipe(Empty);
         Vector#(MaxPending, EnqInfo) pendReqNext = pendReq;
 
         // apply deq effect
-        if(deqInfo[1] matches tagged Valid .deq) begin
+        if(deqInfo.wget matches tagged Valid .deq) begin
             // do deq or swap
             if(!isValid(deq.newCmd)) begin
                 // deq
@@ -404,6 +407,10 @@ module mkTbPipe(Empty);
             let cmd = pendReq[getPendIdx(recvCnt)].cmd;
             refInfoRam[cmd.index][cmd.way] <= deq.wrRam.info;
             refDataRam[cmd.index][cmd.way] <= deq.wrRam.line;
+            let newRep <- updateReplacement(refRepRam[cmd.index], cmd.way);
+            if(deq.updateRep) begin
+                refRepRam[cmd.index] <= newRep;
+            end
             // write to log
             $fwrite(deqLog, "time: %t", $time,
                 "\ndeq/swap: ", fshow(deq.newCmd),
@@ -412,11 +419,14 @@ module mkTbPipe(Empty);
                 "\ncs: ", fshow(deq.wrRam.info.cs),
                 "\ndir: ", fshow(deq.wrRam.info.dir),
                 "\nowner: ", fshow(deq.wrRam.info.owner),
-                "\nline: ", fshow(deq.wrRam.line), "\n\n"
+                "\nother: ", fshow(deq.wrRam.info.other),
+                "\nline: ", fshow(deq.wrRam.line),
+                "\nupdateRep: ", fshow(deq.updateRep),
+                "\nnewRep: ", fshow(newRep), "\n\n"
             );
         end
         // apply enq effect
-        if(enqInfo[1] matches tagged Valid .e) begin
+        if(enqInfo.wget matches tagged Valid .e) begin
             pendReqNext[getPendIdx(sendCnt)] = e;
             sendCnt <= sendCnt + 1;
             $fwrite(enqLog, "time: %t, send %d", $time, sendCnt,
@@ -427,12 +437,14 @@ module mkTbPipe(Empty);
         end
         // write reg
         pendReq <= pendReqNext;
+
         // check tag match
-        if(tmInfo[1] matches tagged Valid .tm) begin
+        if(tmInfo.wget matches tagged Valid .tm) begin
             // get ref
             EnqInfo refEnq = pendReq[getPendIdx(zeroExtend(tm.cmd.id))];
             Index refIdx = refEnq.cmd.index;
             Vector#(WayNum, InfoType) refInfo = readVReg(refInfoRam[refIdx]);
+            RepInfo refRep = refRepRam[refIdx];
             TagMatchInfo refTm = ?;
             refTm.cmd = refEnq.cmd;
             for(Integer i = 0; i < valueOf(WayNum); i = i+1) begin
@@ -440,7 +452,9 @@ module mkTbPipe(Empty);
                 refTm.csVec[i] = refInfo[i].cs;
                 refTm.ownerVec[i] = refInfo[i].owner;
             end
-            if(deqInfo[1] matches tagged Valid .deq) begin
+            refTm.repInfo = refRep;
+            // merge with write from deq
+            if(deqInfo.wget matches tagged Valid .deq) begin
                 let deqCmd = pendReq[getPendIdx(recvCnt)].cmd;
                 let wrIdx = deqCmd.index;
                 let wrWay = deqCmd.way;
@@ -448,6 +462,10 @@ module mkTbPipe(Empty);
                     refTm.tagVec[wrWay] = deq.wrRam.info.tag;
                     refTm.csVec[wrWay] = deq.wrRam.info.cs;
                     refTm.ownerVec[wrWay] = deq.wrRam.info.owner;
+                    if(deq.updateRep) begin
+                        let rep <- updateReplacement(refRep, wrWay);
+                        refTm.repInfo = rep;
+                    end
                 end
             end
             // write log
@@ -455,12 +473,14 @@ module mkTbPipe(Empty);
             $fwrite(tmLog, "ref: cmd: ", fshow(refTm.cmd),
                 "\n     tag: ", fshow(refTm.tagVec),
                 "\n     state: ", fshow(refTm.csVec),
-                "\n     owner: ", fshow(refTm.ownerVec), "\n"
+                "\n     owner: ", fshow(refTm.ownerVec),
+                "\n     repInfo: ", fshow(refTm.repInfo), "\n"
             );
             $fwrite(tmLog, "dut: cmd: ", fshow(tm.cmd),
                 "\n     tag: ", fshow(tm.tagVec),
                 "\n     state: ", fshow(tm.csVec),
-                "\n     owner: ", fshow(tm.ownerVec), "\n"
+                "\n     owner: ", fshow(tm.ownerVec),
+                "\n     repInfo: ", fshow(tm.repInfo), "\n"
             );
             // compare & check
             if(tm == refTm) begin
@@ -470,8 +490,9 @@ module mkTbPipe(Empty);
                 $finish;
             end
         end
+
         // check output
-        if(pipeOut[1] matches tagged Valid .out) begin
+        if(pipeOut.wget matches tagged Valid .out) begin
             // get ref
             EnqInfo refEnq = pendReq[getPendIdx(recvCnt)];
             Index refIdx = refEnq.cmd.index;
@@ -484,16 +505,26 @@ module mkTbPipe(Empty);
                 ram: RamData {
                     info: refInfoRam[refIdx][refWay],
                     line: refDataRam[refIdx][refWay]
-                }
+                },
+                repInfo: refRepRam[refIdx]
             };
             if(refEnq.respLine matches tagged Valid .l) begin
                 refOut.ram.line = l;
             end
             if(refEnq.toState matches tagged UpCs .s) begin
-                refOut.ram.info.cs = s;
+                let upd <- updateByUpCs(
+                    refEnq.cmd, s, isValid(refEnq.respLine),
+                    refOut.ram.info.cs
+                );
+                refOut.ram.info.cs = upd.cs;
             end
             else if(refEnq.toState matches tagged DownDir .s) begin
-                refOut.ram.info.dir <- updateChildDir(refOut.cmd, s, refOut.ram.info.dir);
+                let upd <- updateByDownDir(
+                    refEnq.cmd, s, isValid(refEnq.respLine),
+                    refOut.ram.info.cs, refOut.ram.info.dir
+                );
+                refOut.ram.info.cs = upd.cs;
+                refOut.ram.info.dir = upd.dir;
             end
             // write log
             $fwrite(outLog, "time %t: recv %d\n", $time, recvCnt);
@@ -504,7 +535,9 @@ module mkTbPipe(Empty);
                 "\n     cs: ", fshow(refOut.ram.info.cs),
                 "\n     dir: ", fshow(refOut.ram.info.dir),
                 "\n     owner: ", fshow(refOut.ram.info.owner),
-                "\n     line: ", fshow(refOut.ram.line), "\n"
+                "\n     other: ", fshow(refOut.ram.info.other),
+                "\n     line: ", fshow(refOut.ram.line),
+                "\n     repInfo: ", fshow(refOut.repInfo), "\n"
             );
             $fwrite(outLog, "dut: cmd: ", fshow(out.cmd),
                 "\n     way: ", fshow(out.way),
@@ -513,7 +546,9 @@ module mkTbPipe(Empty);
                 "\n     cs: ", fshow(out.ram.info.cs),
                 "\n     dir: ", fshow(out.ram.info.dir),
                 "\n     owner: ", fshow(out.ram.info.owner),
-                "\n     line: ", fshow(out.ram.line), "\n\n"
+                "\n     other: ", fshow(out.ram.info.other),
+                "\n     line: ", fshow(out.ram.line),
+                "\n     repInfo: ", fshow(out.repInfo), "\n\n"
             );
             // compare & check
             if(out == refOut) begin
@@ -523,69 +558,95 @@ module mkTbPipe(Empty);
                 $finish;
             end
         end
+
         // change state
         if(sendCnt == fromInteger(valueOf(TestNum)) && recvCnt == fromInteger(valueOf(TestNum))) begin
             testFSM <= Check;
             $display("INFO: process done");
         end
-        // reset EHRs
-        enqInfo[1] <= Invalid;
-        deqInfo[1] <= Invalid;
-        tmInfo[1] <= Invalid;
-        pipeOut[1] <= Invalid;
     endrule
 
     // check ram values
     rule checkRam_readReq(testFSM == Check && !waitRamOut);
-        for(Integer i = 0; i < valueOf(WayNum); i = i+1) begin
-            dataRam[i].rdReq(checkIndex);
-            infoRam[i].rdReq(checkIndex);
+        dataRam.rdReq(getDataRamIndex(checkWay, checkIndex));
+        infoRam[checkWay].rdReq(checkIndex);
+        if(checkWay == fromInteger(valueof(WayNum) - 1)) begin
+            repRam.rdReq(checkIndex);
         end
         waitRamOut <= True;
     endrule
 
     rule checkRam_readResp(testFSM == Check && waitRamOut);
-        for(Integer i = 0; i < valueOf(WayNum); i = i+1) begin
+
+        // data & cache info
+        // dut
+        dataRam.deqRdResp;
+        infoRam[checkWay].deqRdResp;
+        let line = dataRam.rdResp;
+        let info = infoRam[checkWay].rdResp;
+        // ref
+        Line refLine = refDataRam[checkIndex][checkWay];
+        InfoType refInfo = refInfoRam[checkIndex][checkWay];
+        // write log
+        $fwrite(checkLog, "index: %d, way: %d\n", checkIndex, checkWay);
+        $fwrite(checkLog, "ref:",
+            "\n    tag: ", fshow(refInfo.tag),
+            "\n    cs: ", fshow(refInfo.cs),
+            "\n    dir: ", fshow(refInfo.dir),
+            "\n    owner: ", fshow(refInfo.owner),
+            "\n    other: ", fshow(refInfo.other),
+            "\n    line: ", fshow(refLine), "\n"
+        );
+        $fwrite(checkLog, "dut:",
+            "\n    tag: ", fshow(info.tag),
+            "\n    cs: ", fshow(info.cs),
+            "\n    dir: ", fshow(info.dir),
+            "\n    owner: ", fshow(info.owner),
+            "\n    other: ", fshow(info.other),
+            "\n    line: ", fshow(line), "\n\n"
+        );
+        // compare & check
+        if(refInfo == info && refLine == line) begin
+        end
+        else begin
+            $fwrite(stderr, "[TbPipe] ERROR: data & info ram final value mismatch\n");
+            $finish;
+        end
+
+        // rep info
+        if(checkWay == fromInteger(valueof(WayNum) - 1)) begin
+            $fwrite(checkLog, "index: %d, all ways\n", checkIndex);
             // dut
-            dataRam[i].deqRdResp;
-            infoRam[i].deqRdResp;
-            let line = dataRam[i].rdResp;
-            let info = infoRam[i].rdResp;
+            repRam.deqRdResp;
+            let rep = repRam.rdResp;
             // ref
-            Line refLine = refDataRam[checkIndex][i];
-            InfoType refInfo = refInfoRam[checkIndex][i];
+            let refRep = refRepRam[checkIndex];
             // write log
-            $fwrite(checkLog, "index: %d, way: %d\n", checkIndex, i);
-            $fwrite(checkLog, "ref:",
-                "\n    tag: ", fshow(refInfo.tag),
-                "\n    cs: ", fshow(refInfo.cs),
-                "\n    dir: ", fshow(refInfo.dir),
-                "\n    owner: ", fshow(refInfo.owner),
-                "\n    line: ", fshow(refLine), "\n"
-            );
-            $fwrite(checkLog, "dut:",
-                "\n    tag: ", fshow(info.tag),
-                "\n    cs: ", fshow(info.cs),
-                "\n    dir: ", fshow(info.dir),
-                "\n    owner: ", fshow(info.owner),
-                "\n    line: ", fshow(line), "\n\n"
-            );
-            // compare & check
-            if(refInfo == info && refLine == line) begin
+            $fwrite(checkLog, "ref: repInfo: ", fshow(refRep), "\n");
+            $fwrite(checkLog, "dut: repInfo: ", fshow(rep), "\n\n");
+            // compare and check
+            if(refRep == rep) begin
             end
             else begin
-                $fwrite(stderr, "[TbPipe] ERROR: ram final value mismatch\n");
+                $fwrite(stderr, "[TbPipe] ERROR: rep ram final value mismatch\n");
                 $finish;
             end
         end
+
         // change state
-        if(checkIndex < fromInteger(valueOf(IndexNum) - 1)) begin
-            checkIndex <= checkIndex + 1;
-            waitRamOut <= False;
+        waitRamOut <= False;
+        if(checkWay < fromInteger(valueof(WayNum) - 1)) begin
+            checkWay <= checkWay + 1;
         end
         else begin
-            $display("INFO: Pass");
-            $finish;
+            checkWay <= 0;
+            if(checkIndex < fromInteger(valueOf(IndexNum) - 1)) begin
+                checkIndex <= checkIndex + 1;
+            end
+            else begin
+                $display("INFO: Pass");
+                $finish;
+            end
         end
     endrule
 endmodule

@@ -37,6 +37,7 @@ import Performance::*;
 import LatencyTimer::*;
 import Cntrs::*;
 import ConfigReg::*;
+import RandomReplace::*;
 
 // we use an infoQ to serialize all req to memory
 // this also ensures that cache pipeline is never blocked
@@ -162,7 +163,7 @@ module mkLLBank#(
     Alias#(cRqT, LLRq#(cRqIdT, dmaRqIdT, childT)),
     Alias#(cRqSlotT, LLCRqSlot#(childNum, wayT, tagT)), // cRq MSHR slot
     Alias#(llCmdT, LLCmd#(childT, cRqIndexT)),
-    Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, dirT, cacheOwnerT, void, Line, llCmdT)),
+    Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, dirT, cacheOwnerT, void, RandRepInfo, Line, llCmdT)),
     // requirements
     Bits#(cRqIdT, _cRqIdSz),
     Bits#(dmaRqIdT, _dmaRqIdSz),

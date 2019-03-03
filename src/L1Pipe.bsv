@@ -108,7 +108,7 @@ interface L1Pipe#(
     ) first;
     method Action deqWrite(
         Maybe#(cRqIdxT) swapRq,
-        RamData#(tagT, Msi, void, Maybe#(cRqIdxT), Line) wrRam, // always write BRAM
+        RamData#(tagT, Msi, void, Maybe#(cRqIdxT), void, Line) wrRam, // always write BRAM
         Bool updateRep
     );
 endinterface
@@ -175,7 +175,8 @@ module mkL1Pipe(
                 tag: 0,
                 cs: I,
                 dir: ?,
-                owner: Invalid
+                owner: Invalid,
+                other: ?
             });
         end
         repRam.wrReq(initIndex, randRepInitInfo); // useless for random replace
@@ -211,7 +212,8 @@ module mkL1Pipe(
         pipeCmdT cmd,
         Vector#(wayNum, tagT) tagVec, 
         Vector#(wayNum, Msi) csVec, 
-        Vector#(wayNum, ownerT) ownerVec
+        Vector#(wayNum, ownerT) ownerVec,
+        repT repInfo
     );
         return actionvalue
             function tagT getTag(Addr a) = truncateLSB(a);
@@ -296,7 +298,7 @@ module mkL1Pipe(
     endfunction
 
     function ActionValue#(updateByDownDirT) updateByDownDir(
-        pipeCmdT cmd, Msi toState, Bool dataV, Msi oldCs dirT oldDir
+        pipeCmdT cmd, Msi toState, Bool dataV, Msi oldCs, dirT oldDir
     );
     actionvalue
         doAssert(False, "L1 does not have dir");

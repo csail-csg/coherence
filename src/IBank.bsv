@@ -44,6 +44,7 @@ import Fifo::*;
 import CacheUtils::*;
 import Performance::*;
 import LatencyTimer::*;
+import RandomReplace::*;
 
 // L1 I$
 
@@ -112,7 +113,7 @@ module mkIBank#(
     Alias#(pRqRsFromPT, PRqRsMsg#(wayT, void)),
     Alias#(cRqSlotT, ICRqSlot#(wayT, tagT)), // cRq MSHR slot
     Alias#(l1CmdT, L1Cmd#(indexT, cRqIdxT, pRqIdxT)),
-    Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, void, cacheOwnerT, void, Line, l1CmdT)),
+    Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, void, cacheOwnerT, void, RandRepInfo, Line, l1CmdT)),
     Alias#(resultT, Vector#(supSz, Maybe#(Instruction))),
     // requirements
     FShow#(pipeOutT),

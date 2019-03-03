@@ -85,7 +85,7 @@ interface LLPipe#(
     ) unguard_first;
     method Action deqWrite(
         Maybe#(cRqIdxT) swapRq,
-        RamData#(tagT, Msi, Vector#(childNum, Msi), Maybe#(CRqOwner#(cRqIdxT)), Line) wrRam, // always write BRAM
+        RamData#(tagT, Msi, Vector#(childNum, Msi), Maybe#(CRqOwner#(cRqIdxT)), void, Line) wrRam, // always write BRAM
         Bool updateRep
     );
 endinterface
@@ -153,7 +153,8 @@ module mkLLPipe(
                 tag: 0,
                 cs: I,
                 dir: replicate(I),
-                owner: Invalid
+                owner: Invalid,
+                other: ?
             });
         end
         repRam.wrReq(initIndex, randRepInitInfo); // useless for random replace
@@ -185,7 +186,8 @@ module mkLLPipe(
         pipeCmdT cmd,
         Vector#(wayNum, tagT) tagVec, 
         Vector#(wayNum, Msi) csVec, 
-        Vector#(wayNum, ownerT) ownerVec
+        Vector#(wayNum, ownerT) ownerVec,
+        repT repInfo
     );
         return actionvalue
             function tagT getTag(Addr a) = truncateLSB(a);

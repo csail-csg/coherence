@@ -22,6 +22,7 @@
 // SOFTWARE.
 
 import Vector::*;
+import Fifo::*;
 import CCTypes::*;
 import RWBramCore::*;
 
@@ -45,7 +46,7 @@ module mkRandRepRam(RWBramCore#(indexT, RandRepInfo));
         return ?;
     endmethod
     method rdRespValid = rdReqQ.notEmpty;
-    method deqRdResp = rdReq.deq;
+    method deqRdResp = rdReqQ.deq;
 endmodule
 
 interface RandomReplace#(numeric type wayNum);

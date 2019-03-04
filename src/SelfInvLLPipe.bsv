@@ -328,13 +328,13 @@ module mkSelfInvLLPipe(
                 pipe.enq(CRq (rq), Invalid, Invalid);
             end
             tagged CRs .rs: begin
-                pipe.enq(CRs (LLPipeCRsCmd {
+                pipe.enq(CRs (SelfInvLLPipeCRsCmd {
                     addr: rs.addr,
                     child: rs.child
                 }), rs.data, DownDir (rs.toState));
             end
             tagged MRs .rs: begin
-                pipe.enq(MRs (LLPipeMRsCmd {
+                pipe.enq(MRs (SelfInvLLPipeMRsCmd {
                     addr: rs.addr,
                     way: rs.way
                 }), Valid (rs.data), UpCs (rs.toState));
@@ -358,7 +358,7 @@ module mkSelfInvLLPipe(
         Addr addr = getAddrFromCmd(pipe.first.cmd); // inherit addr
         Maybe#(pipeCmdT) newCmd = Invalid;
         if(swapRq matches tagged Valid .idx) begin
-            newCmd = Valid (CRq (LLPipeCRqIn {addr: addr, mshrIdx: idx}));
+            newCmd = Valid (CRq (SelfInvLLPipeCRqIn {addr: addr, mshrIdx: idx}));
         end
         // call pipe
         pipe.deqWrite(newCmd, wrRam, updateRep);

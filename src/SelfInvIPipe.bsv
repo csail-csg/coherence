@@ -31,70 +31,64 @@ import CCPipe::*;
 import RWBramCore::*;
 import RandomReplace::*;
 
-// type param ordering: bank < way < index < tag < cRq < pRq
+export SelfInvIPipeRqIn(..);
+export SeflInvIPipePRsIn(..);
+export SelfInvIPipeIn(..);
+export SelfInvICmd(..);
+export SelfInvIPipe(..);
+export mkSelfInvIPipe;
 
-// in L1 cache, only cRq can occupy cache line (pRq handled immediately)
-// replacement is always done immediately (never have replacing line)
-// so cache owner type is simply Maybe#(cRqIdxT)
+// type param ordering: bank < way < index < tag < cRq
+
+// In I cache, only cRq can occupy cache line, there is no pRq or explicity
+// replacement, so cache owner type is simply Maybe#(cRqIdxT)
 
 // input types
 typedef struct {
     Addr addr;
     rqIdxT mshrIdx;
-} SelfInvL1PipeRqIn#(type rqIdxT) deriving(Bits, Eq, FShow);
+} SelfInvIPipeRqIn#(type rqIdxT) deriving(Bits, Eq, FShow);
 
 typedef struct {
     Addr addr;
     Msi toState;
     Maybe#(Line) data;
     wayT way;
-} SelfInvL1PipePRsIn#(type wayT) deriving(Bits, Eq, FShow);
+} SelfInvIPipePRsIn#(type wayT) deriving(Bits, Eq, FShow);
 
 typedef union tagged {
-    SelfInvL1PipeRqIn#(cRqIdxT) CRq;
-    SelfInvL1PipeRqIn#(pRqIdxT) PRq;
-    SelfInvL1PipePRsIn#(wayT) PRs;
-} SelfInvL1PipeIn#(
+    SelfInvIPipeRqIn#(cRqIdxT) CRq;
+    SelfInvIPipePRsIn#(wayT) PRs;
+} SelfInvIPipeIn#(
     type wayT,
-    type cRqIdxT, 
-    type pRqIdxT
+    type cRqIdxT
 ) deriving (Bits, Eq, FShow);
 
-// output cmd to the processing rule in L1$
+// output cmd to the processing rule in I$
 typedef union tagged {
-    cRqIdxT L1CRq;
-    pRqIdxT L1PRq;
-    void L1PRs;
-} SelfInvL1Cmd#(
-    type cRqIdxT, 
-    type pRqIdxT
+    cRqIdxT ICRq;
+    void IPRs;
+} SelfInvICmd#(
+    type cRqIdxT
 ) deriving (Bits, Eq, FShow);
 
-// The "other" field in CacheInfo tracks the number of hits on the cache line
-// before self inv
-typedef struct {
-    Bit#(TLog#(maxHitNum)) hits;
-} SelfInvL1Hits#(numeric type maxHitNum) deriving(Bits, Eq, FShow);
-
-interface SelfInvL1Pipe#(
+interface SelfInvIPipe#(
     numeric type lgBankNum,
     numeric type wayNum,
-    numeric type maxHitNum,
     type indexT,
     type tagT,
-    type cRqIdxT,
-    type pRqIdxT
+    type cRqIdxT
 );
-    method Action send(SelfInvL1PipeIn#(Bit#(TLog#(wayNum)), cRqIdxT, pRqIdxT) r);
+    method Action send(SelfInvIPipeIn#(Bit#(TLog#(wayNum)), cRqIdxT) r);
     method PipeOut#(
         Bit#(TLog#(wayNum)),
         tagT, Msi, void, // no dir
-        Maybe#(cRqIdxT), SelfInvL1Hits#(maxHitNum), RandRepInfo,
-        Line, SelfInvL1Cmd#(cRqIdxT, pRqIdxT)
+        Maybe#(cRqIdxT), void, RandRepInfo, // no other
+        Line, SelfInvICmd#(cRqIdxT)
     ) first;
     method Action deqWrite(
         Maybe#(cRqIdxT) swapRq,
-        RamData#(tagT, Msi, void, Maybe#(cRqIdxT), SelfInvL1Hits#(maxHitNum), Line) wrRam, // always write BRAM
+        RamData#(tagT, Msi, void, Maybe#(cRqIdxT), void, Line) wrRam, // always write BRAM
         Bool updateRep
     );
     // drop stale clean cache lines
@@ -106,16 +100,14 @@ endinterface
 typedef struct {
     Addr addr;
     wayT way;
-} SelfInvL1PipePRsCmd#(type wayT) deriving(Bits, Eq, FShow);
+} SelfInvIPipePRsCmd#(type wayT) deriving(Bits, Eq, FShow);
 
 typedef union tagged {
-    SelfInvL1PipeRqIn#(cRqIdxT) CRq;
-    SelfInvL1PipeRqIn#(pRqIdxT) PRq;
-    SelfInvL1PipePRsCmd#(wayT) PRs;
-} SelfInvL1PipeCmd#(
+    SelfInvIPipeRqIn#(cRqIdxT) CRq;
+    SelfInvIPipePRsCmd#(wayT) PRs;
+} SelfInvIPipeCmd#(
     type wayT,
-    type cRqIdxT, 
-    type pRqIdxT
+    type cRqIdxT
 ) deriving (Bits, Eq, FShow);
 
 // cache state array with reconcile port
@@ -131,15 +123,19 @@ module mkCacheStateArray(CacheStateArray#(indexT)) provisos(
     Alias#(indexT, Bit#(indexSz)),
     NumAlias#(size, TExp#(indexSz))
 );
-    Vector#(size, Reg#(Msi)) state <- replicateM(mkConfigReg(I));
+    staticAssert(pack(Msi'I) == 2'd0, "I = 0");
+    staticAssert(pack(Msi'S) == 2'd1, "S = 0");
+
+    Vector#(size, Reg#(Bit#(1))) state <- replicateM(mkConfigReg(0));
     Fifo#(1, Msi) rdRespQ <- mkPipelineFifo;
 
     interface RWBramCore ram;
         method Action wrReq(indexT idx, Msi s);
-            state[idx] <= s;
+            doAssert(s == I || s == S, "only I or S");
+            state[idx] <= truncate(pack(s));
         endmethod
         method Action rdReq(indexT idx);
-            rdRespQ.enq(state[idx]);
+            rdRespQ.enq(unpack(zeroExtend(state[idx])));
         endmethod
         method rdResp = rdRespQ.first;
         method rdRespValid = rdRespQ.notEmpty;
@@ -147,11 +143,9 @@ module mkCacheStateArray(CacheStateArray#(indexT)) provisos(
     endinterface
 
     method Action reconcile;
-        function Action resetS(Reg#(Msi) s);
+        function Action resetS(Reg#(Bit#(1)) s);
         action
-            if(s == S) begin
-                s <= I;
-            end
+            s <= 0;
         endaction
         endfunction
         joinActions(map(resetS, states));
@@ -218,18 +212,18 @@ module mkCacheInfoArray(CacheInfoArray#(indexT, tagT, ownerT, otherT)) provisos(
     method reconcile = csArray.reconcile;
 endmodule
 
-module mkSelfInvL1Pipe(
-    SelfInvL1Pipe#(lgBankNum, wayNum, maxHitNum, indexT, tagT, cRqIdxT, pRqIdxT)
+module mkSelfInvIPipe(
+    SelfInvIPipe#(lgBankNum, wayNum, indexT, tagT, cRqIdxT)
 ) provisos(
     Alias#(wayT, Bit#(TLog#(wayNum))),
     Alias#(dirT, void), // no directory
     Alias#(ownerT, Maybe#(cRqIdxT)),
-    Alias#(otherT, SelfInvL1Hits#(maxHitNum)),
+    Alias#(otherT, void),
     Alias#(repT, RandRepInfo),
-    Alias#(pipeInT, SelfInvL1PipeIn#(wayT, cRqIdxT, pRqIdxT)),
-    Alias#(pipeCmdT, SelfInvL1PipeCmd#(wayT, cRqIdxT, pRqIdxT)),
-    Alias#(l1CmdT, SelfInvL1Cmd#(cRqIdxT, pRqIdxT)),
-    Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, dirT, ownerT, otherT, repT, Line, l1CmdT)), // output type
+    Alias#(pipeInT, SelfInvIPipeIn#(wayT, cRqIdxT)),
+    Alias#(pipeCmdT, SelfInvIPipeCmd#(wayT, cRqIdxT)),
+    Alias#(iCmdT, SelfInvICmd#(indexT, cRqIdxT)),
+    Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, dirT, ownerT, otherT, repT, Line, iCmdT)), // output type
     Alias#(infoT, CacheInfo#(tagT, Msi, dirT, ownerT, otherT)),
     Alias#(ramDataT, RamData#(tagT, Msi, dirT, ownerT, otherT, Line)),
     Alias#(respStateT, RespState#(Msi)),
@@ -239,7 +233,6 @@ module mkSelfInvL1Pipe(
     Alias#(indexT, Bit#(indexSz)),
     Alias#(tagT, Bit#(tagSz)),
     Alias#(cRqIdxT, Bit#(cRqIdxSz)),
-    Alias#(pRqIdxT, Bit#(pRqIdxSz)),
     Add#(indexSz, a__, AddrSz),
     Add#(tagSz, b__, AddrSz)
 );
@@ -263,7 +256,7 @@ module mkSelfInvL1Pipe(
                 cs: I,
                 dir: ?,
                 owner: Invalid,
-                other: SelfInvL1Hits {hits: 0}
+                other: ?
             });
         end
         repRam.wrReq(initIndex, randRepInitInfo); // useless for random replace
@@ -280,7 +273,6 @@ module mkSelfInvL1Pipe(
     function Addr getAddrFromCmd(pipeCmdT cmd);
         return (case(cmd) matches
             tagged CRq .r: r.addr;
-            tagged PRq .r: r.addr;
             tagged PRs .r: r.addr;
             default: ?;
         endcase);
@@ -316,7 +308,8 @@ module mkSelfInvL1Pipe(
                 };
             end
             else begin
-                // CRq/PRq: need tag matching
+                doAssert(cmd matches tagged CRq .rq ? True : False, "must be cRq");
+                // CRq: need tag matching
                 Addr addr = getAddrFromCmd(cmd);
                 tagT tag = getTag(addr);
                 // find hit way (nothing is being replaced)
@@ -329,13 +322,6 @@ module mkSelfInvL1Pipe(
                     return TagMatchResult {
                         way: w,
                         pRqMiss: False
-                    };
-                end
-                else if(cmd matches tagged PRq .rq) begin
-                    // pRq miss
-                    return TagMatchResult {
-                        way: 0, // default to 0
-                        pRqMiss: True
                     };
                 end
                 else begin
@@ -365,7 +351,7 @@ module mkSelfInvL1Pipe(
         pipeCmdT cmd, Msi toState, Bool dataV, Msi oldCs
     );
     actionvalue
-        doAssert(toState > oldCs, "should truly upgrade cs");
+        doAssert(toState == S && oldCs == I, "upgrade cs I->S");
         doAssert(dataV, "self inv L1 always needs data resp");
         return UpdateByUpCs {cs: toState};
     endactionvalue
@@ -419,11 +405,8 @@ module mkSelfInvL1Pipe(
             tagged CRq .rq: begin
                 pipe.enq(CRq (rq), Invalid, Invalid);
             end
-            tagged PRq .rq: begin
-                pipe.enq(PRq (rq), Invalid, Invalid);
-            end
             tagged PRs .rs: begin
-                pipe.enq(PRs (SelfInvL1PipePRsCmd {
+                pipe.enq(PRs (SelfInvIPipePRsCmd {
                     addr: rs.addr,
                     way: rs.way
                 }), rs.data, UpCs (rs.toState));
@@ -436,9 +419,8 @@ module mkSelfInvL1Pipe(
         let pout = pipe.first;
         return PipeOut {
             cmd: (case(pout.cmd) matches
-                tagged CRq .rq: L1CRq (rq.mshrIdx);
-                tagged PRq .rq: L1PRq (rq.mshrIdx);
-                tagged PRs .rs: L1PRs;
+                tagged CRq .rq: ICRq (rq.mshrIdx);
+                tagged PRs .rs: IPRs;
                 default: ?;
             endcase),
             way: pout.way,
@@ -453,7 +435,7 @@ module mkSelfInvL1Pipe(
         Maybe#(pipeCmdT) newCmd = Invalid;
         if(swapRq matches tagged Valid .idx) begin // swap in cRq
             Addr addr = getAddrFromCmd(pipe.first.cmd); // inherit addr
-            newCmd = Valid (CRq (SelfInvL1PipeRqIn {addr: addr, mshrIdx: idx}));
+            newCmd = Valid (CRq (SelfInvIPipeRqIn {addr: addr, mshrIdx: idx}));
         end
         // call pipe
         pipe.deqWrite(newCmd, wrRam, updateRep);

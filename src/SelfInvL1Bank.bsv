@@ -124,7 +124,6 @@ module mkSelfInvL1Bank#(
     Alias#(pRqIdxT, Bit#(TLog#(pRqNum))),
     Alias#(cacheOwnerT, Maybe#(cRqIdxT)), // actually owner cannot be pRq
     Alias#(otherT, SelfInvL1Hits#(maxHitNum)),
-    Alias#(repT, RandRepInfo),
     Alias#(cacheInfoT, CacheInfo#(tagT, Msi, void, cacheOwnerT, otherT)),
     Alias#(ramDataT, RamData#(tagT, Msi, void, cacheOwnerT, otherT, Line)),
     Alias#(procRqT, ProcRq#(procRqIdT)),
@@ -134,8 +133,8 @@ module mkSelfInvL1Bank#(
     Alias#(pRsFromPT, PRsMsg#(wayT, void)),
     Alias#(pRqRsFromPT, PRqRsMsg#(wayT, void)),
     Alias#(cRqSlotT, L1CRqSlot#(wayT, tagT)), // cRq MSHR slot
-    Alias#(l1CmdT, L1Cmd#(indexT, cRqIdxT, pRqIdxT)),
-    Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, void, cacheOwnerT, otherT, repT, Line, l1CmdT)),
+    Alias#(l1CmdT, L1Cmd#(cRqIdxT, pRqIdxT)),
+    Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, void, cacheOwnerT, otherT, RandRepInfo, Line, l1CmdT)),
     // requirements
     Bits#(procRqIdT, _procRqIdT),
     FShow#(procRqIdT),
@@ -943,13 +942,12 @@ module mkSelfInvL1Cache#(
     Alias#(pRqIdxT, Bit#(TLog#(pRqNum))),
     Alias#(cacheOwnerT, Maybe#(cRqIdxT)),
     Alias#(otherT, SelfInvL1Hits#(maxHitNum)),
-    Alias#(repT, RandRepInfo),
     Alias#(procRqT, ProcRq#(procRqIdT)),
     Alias#(cRqToPT, CRqMsg#(wayT, void)),
     Alias#(cRsToPT, CRsMsg#(void)),
     Alias#(pRqRsFromPT, PRqRsMsg#(wayT, void)),
     Alias#(l1CmdT, L1Cmd#(indexT, cRqIdxT, pRqIdxT)),
-    Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, void, cacheOwnerT, otherT, repT, Line, l1CmdT)),
+    Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, void, cacheOwnerT, otherT, RandRepInfo, Line, l1CmdT)),
     // requirements
     Bits#(procRqIdT, _procRqIdT),
     FShow#(procRqIdT),

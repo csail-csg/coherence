@@ -80,7 +80,7 @@ interface CCPipe#(
         Bool updateRep // update replacement info
     );
     // empty signal when we need to flush self-invalidate cache
-    method Bool empty_for_flush;
+    method Bool emptyForFlush;
 endinterface
 
 // internal pipeline reg types
@@ -402,7 +402,7 @@ module mkCCPipe#(
         end
     endmethod
 
-    method Bool empty_for_flush;
+    method Bool emptyForFlush;
         return !isValid(mat2Out[0]) && !isValid(enq2Mat[0]);
     endmethod
 endmodule

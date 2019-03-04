@@ -72,24 +72,32 @@ typedef union tagged {
     type pRqIdxT
 ) deriving (Bits, Eq, FShow);
 
+// The "other" field in CacheInfo tracks the number of hits on the cache line
+// before self inv
+typedef struct {
+    Bit#(TLog#(maxHitNum)) hits;
+} SelfInvL1Hits#(numeric type maxHitNum) deriving(Bits, Eq, FShow);
+
 interface SelfInvL1Pipe#(
     numeric type lgBankNum,
     numeric type wayNum,
+    numeric type maxHitNum,
     type indexT,
     type tagT,
-    type cRqIdxT, 
+    type cRqIdxT,
     type pRqIdxT
 );
     method Action send(SelfInvL1PipeIn#(Bit#(TLog#(wayNum)), indexT, cRqIdxT, pRqIdxT) r);
     method PipeOut#(
-        Bit#(TLog#(wayNum)), 
+        Bit#(TLog#(wayNum)),
         tagT, Msi, void, // no dir
-        Maybe#(cRqIdxT),
+        Maybe#(cRqIdxT), SelfInvL1Hits#(maxHitNum), RandRepInfo,
         Line, SelfInvL1Cmd#(indexT, cRqIdxT, pRqIdxT)
     ) first;
     method Action deqWrite(
         Maybe#(cRqIdxT) swapRq,
-        RamData#(tagT, Msi, void, Maybe#(cRqIdxT), Line) wrRam // always write BRAM
+        RamData#(tagT, Msi, void, Maybe#(cRqIdxT), SelfInvL1Hits#(maxHitNum), Line) wrRam, // always write BRAM
+        Bool updateRep
     );
     // drop stale clean cache lines
     method Action reconcile;
@@ -157,49 +165,55 @@ endmodule
 typedef struct {
     tagT tag;
     ownerT owner;
-} TagOwner#(type tagT, type ownerT) deriving(Bits, Eq, FShow);
+    otherT other;
+} TagOwnerOther#(type tagT, type ownerT, type otherT) deriving(Bits, Eq, FShow);
 
-interface CacheInfoArray(type indexT, type tagT, type ownerT);
-    interface RWBramCore#(indexT, CacheInfo#(tagT, Msi, void, ownerT)) ram;
+interface CacheInfoArray(type indexT, type tagT, type ownerT, type otherT);
+    interface RWBramCore#(indexT, CacheInfo#(tagT, Msi, void, ownerT, otherT)) ram;
     method Action reconcile;
 endinterface
 
-module mkCacheInfoArray(CacheInfoArray#(indexT)) provisos(
+module mkCacheInfoArray(CacheInfoArray#(indexT, tagT, ownerT, otherT)) provisos(
     Alias#(indexT, Bit#(indexSz)),
     NumAlias#(size, TExp#(indexSz)),
-    Alias#(tagOwnerT, TagOwner#(tagT, ownerT)),
-    Alias#(infoT, CacheInfo#(tagT, Msi, void, ownerT))
+    Alias#(tagOwnerOtherT, TagOwnerOther#(tagT, ownerT, otherT)),
+    Alias#(infoT, CacheInfo#(tagT, Msi, void, ownerT, otherT)),
+    Bits#(tagT, _tagSz),
+    Bits#(ownerT, _ownerSz),
+    Bits#(otherT, _otherSz)
 );
-    RWBramCore#(indexT, tagOwnerT) tagOwnerRam <- mkRWBramCore;
+    RWBramCore#(indexT, tagOwnerOtherT) tagOwnerOtherRam <- mkRWBramCore;
     CacheStateArray#(indexT) csArray <- mkCacheStateArray;
 
     interface RWBramCore ram;
         method Action wrReq(indexT idx, infoT x);
-            tagOwnerRam.wrReq(idx, TagOwner {
+            tagOwnerOtherRam.wrReq(idx, TagOwner {
                 tag: x.tag,
-                owner: x.owner
+                owner: x.owner,
+                other: x.other
             });
             csArray.ram.wrReq(idx, x.cs);
         endmethod
         method Action rdReq(indexT idx);
-            tagOwnerRam.rdReq(idx);
+            tagOwnerOtherRam.rdReq(idx);
             csArray.ram.rdReq(idx);
         endmethod
         method infoT rdResp;
-            tagOwnerT tagOwner = tagOwnerRam.rdResp;
+            tagOwnerOtherT tagOwnerOther = tagOwnerOtherRam.rdResp;
             Msi cs = csArray.ram.rdResp;
             return CacheInfo {
-                tag: tagOwner.tag,
+                tag: tagOwnerOther.tag,
                 cs: cs,
                 dir: ?,
-                owner: tagOwner.owner
+                owner: tagOwnerOther.owner,
+                other: tagOwnerOther.other
             };
         endmethod
         method Bool rdRespValid;
-            return tagOwnerRam.rdRespvalid && csArray.ram.rdRespValid;
+            return tagOwnerOtherRam.rdRespvalid && csArray.ram.rdRespValid;
         endmethod
         method Action deqRdResp;
-            tagOwnerRam.deqRdResp;
+            tagOwnerOtherRam.deqRdResp;
             csArray.ram.deqRdResp;
         endmethod
     endinterface
@@ -208,17 +222,19 @@ module mkCacheInfoArray(CacheInfoArray#(indexT)) provisos(
 endmodule
 
 module mkSelfInvL1Pipe(
-    SelfInvL1Pipe#(lgBankNum, wayNum, indexT, tagT, cRqIdxT, pRqIdxT)
+    SelfInvL1Pipe#(lgBankNum, wayNum, maxHitNum, indexT, tagT, cRqIdxT, pRqIdxT)
 ) provisos(
     Alias#(wayT, Bit#(TLog#(wayNum))),
     Alias#(dirT, void), // no directory
     Alias#(ownerT, Maybe#(cRqIdxT)),
+    Alias#(otherT, SelfInvL1Hits#(maxHitNum)),
+    Alias#(repT, RandRepInfo),
     Alias#(pipeInT, SelfInvL1PipeIn#(wayT, indexT, cRqIdxT, pRqIdxT)),
     Alias#(pipeCmdT, SelfInvL1PipeCmd#(wayT, indexT, cRqIdxT, pRqIdxT)),
     Alias#(l1CmdT, SelfInvL1Cmd#(indexT, cRqIdxT, pRqIdxT)),
-    Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, dirT, ownerT, Line, l1CmdT)), // output type
-    Alias#(infoT, CacheInfo#(tagT, Msi, dirT, ownerT)),
-    Alias#(ramDataT, RamData#(tagT, Msi, dirT, ownerT, Line)),
+    Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, dirT, ownerT, otherT, repT, Line, l1CmdT)), // output type
+    Alias#(infoT, CacheInfo#(tagT, Msi, dirT, ownerT, otherT)),
+    Alias#(ramDataT, RamData#(tagT, Msi, dirT, ownerT, otherT, Line)),
     Alias#(respStateT, RespState#(Msi)),
     Alias#(tagMatchResT, TagMatchResult#(wayT)),
     Alias#(dataIndexT, Bit#(TAdd#(TLog#(wayNum), indexSz))),
@@ -231,9 +247,11 @@ module mkSelfInvL1Pipe(
     Add#(tagSz, b__, AddrSz)
 );
     // info RAM
-    Vector#(wayNum, CacheInfoArray#(indexT, tagT, ownerT)) infoArray <- replicateM(mkCacheInfoArray);
+    Vector#(wayNum, CacheInfoArray#(indexT, tagT, ownerT, otherT)) infoArray <- replicateM(mkCacheInfoArray);
     function RWBramCore#(indexT, infoT) getInfoRam(Integer i) = infoArray[i].ram;
     Vector#(wayNum, RWBramCore#(indexT, infoT)) infoRam = map(getInfoRam, genVector);
+    // rep RAM (dummy)
+    RWBramCore#(indexT, repT) repRam <- mkRandRepRam;
     // data RAM
     RWBramCore#(dataIndexT, Line) dataRam <- mkRWBramCore;
 
@@ -247,9 +265,11 @@ module mkSelfInvL1Pipe(
                 tag: 0,
                 cs: I,
                 dir: ?,
-                owner: Invalid
+                owner: Invalid,
+                other: SelfInvL1Hits {hits: 0}
             });
         end
+        repRam.wrReq(initIndex, randRepInitInfo); // useless for random replace
         initIndex <= initIndex + 1;
         if(initIndex == maxBound) begin
             initDone <= True;
@@ -278,7 +298,8 @@ module mkSelfInvL1Pipe(
         pipeCmdT cmd,
         Vector#(wayNum, tagT) tagVec, 
         Vector#(wayNum, Msi) csVec, 
-        Vector#(wayNum, ownerT) ownerVec
+        Vector#(wayNum, ownerT) ownerVec,
+        repT repInfo
     );
         return actionvalue
             function tagT getTag(Addr a) = truncateLSB(a);
@@ -343,29 +364,37 @@ module mkSelfInvL1Pipe(
         endactionvalue;
     endfunction
 
-    function ActionValue#(dirT) updateChildDir(pipeCmdT cmd, Msi toState, dirT oldDir);
+    function ActionValue#(UpdateByUpCs#(Msi)) updateByUpCs(
+        pipeCmdT cmd, Msi toState, Bool dataV, Msi oldCs
+    );
     actionvalue
-        doAssert(False, "L1 should not update dir");
-        return ?;
+        doAssert(toState > oldCs, "should truly upgrade cs");
+        doAssert(dataV, "self inv L1 always needs data resp");
+        return UpdateByUpCs {cs: toState};
     endactionvalue
     endfunction
 
-    function Action checkUpPRsDataValid(Msi cs, Bool dataV);
-    action
-        doAssert(dataV, "self inv L1 always needs data resp");
-    endaction
+    function ActionValue#(UpdateByDownDir#(Msi, dirT) updateByDownDir(
+        pipeCmdT cmd, Msi toState, Bool dataV, Msi oldCs, dirT oldDir
+    );
+    actionvalue
+        doAssert(False, "L1 should not have cRs");
+        return UpdateByDownDir {cs: oldCs, dir: oldDir};
+    endactionvalue
     endfunction
 
-    function Action checkDownCRsDataValid(pipeCmdT cmd, dirT dir, Bool dataV);
-    action
-        doAssert(False, ("L1 should not have cRs"));
-    endaction
+    function ActionValue#(repT) updateRepInfo(repT r, wayT w);
+    actionvalue
+        return ?; // random replace does not have bookkeeping
+    endactionvalue
     endfunction
 
-    CCPipe#(wayNum, indexT, tagT, Msi, dirT, ownerT, Line, pipeCmdT) pipe <- mkCCPipe(
-        regToReadOnly(initDone), getIndex, tagMatch, updateChildDir, 
-        checkUpPRsDataValid, checkDownCRsDataValid,
-        infoRam, dataRam
+    CCPipe#(
+        wayNum, indexT, tagT, Msi, dirT, ownerT, otherT, repT, Line, pipeCmdT
+    ) pipe <- mkCCPipe(
+        regToReadOnly(initDone), getIndex, tagMatch,
+        updateByUpCs, updateByDownDir, updateRepInfo,
+        infoRam, repRam, dataRam
     );
 
     // reconcile: wait until pipeline empty and drop all S states. Stall
@@ -376,7 +405,7 @@ module mkSelfInvL1Pipe(
 
     RWire#(void) conflict_reconcile_deq <- mkRWire;
     
-    rule doReconcile(initDone && needReconcile && pipe.empty_for_flush);
+    rule doReconcile(initDone && needReconcile && pipe.emptyForFlush);
         function Action flush(CacheInfoArray#(indexT, tagT, ownerT) ifc);
         action
             ifc.reconcile;
@@ -417,11 +446,12 @@ module mkSelfInvL1Pipe(
             endcase),
             way: pout.way,
             pRqMiss: pout.pRqMiss,
-            ram: pout.ram
+            ram: pout.ram,
+            repInfo: pout.repInfo
         };
     endmethod
 
-    method Action deqWrite(Maybe#(cRqIdxT) swapRq, ramDataT wrRam);
+    method Action deqWrite(Maybe#(cRqIdxT) swapRq, ramDataT wrRam, Bool updateRep);
         // get new cmd
         Maybe#(pipeCmdT) newCmd = Invalid;
         if(swapRq matches tagged Valid .idx) begin // swap in cRq
@@ -429,7 +459,7 @@ module mkSelfInvL1Pipe(
             newCmd = Valid (CRq (L1PipeRqIn {addr: addr, mshrIdx: idx}));
         end
         // call pipe
-        pipe.deqWrite(newCmd, wrRam);
+        pipe.deqWrite(newCmd, wrRam, updateRep);
         // conflict with reconcile
         conflict_reconcile_deq.wset(?);
     endmethod
@@ -438,5 +468,7 @@ module mkSelfInvL1Pipe(
         needReconcile <= True;
     endmethod
 
-    method reconcile_done = !needReconcile;
+    method Bool reconcile_done;
+        return !needReconcile;
+    endmethod
 endmodule

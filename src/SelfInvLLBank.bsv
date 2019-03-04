@@ -28,9 +28,8 @@ import Types::*;
 import CCTypes::*;
 import LLCRqMshr::*;
 import CCPipe::*;
-import LLPipe ::*;
+import SelfInvLLPipe ::*;
 import FShow::*;
-import DefaultValue::*;
 import Fifo::*;
 import CacheUtils::*;
 import Performance::*;
@@ -93,7 +92,7 @@ typedef struct {
     Bit#(TLog#(childNum)) child;
     LLCRqState state;
     Bool waitP;
-    Vector#(childNum, DirPend) dirPend;
+    SelfInvDirPend#(Bit#(TLog#(childNum))) dirPend;
 } LLCRqStuck#(numeric type childNum, type cRqIdT, type dmaRqIdT) deriving(Bits, Eq, FShow);
 
 // unified child req & dma req
@@ -136,15 +135,16 @@ typedef struct {
 // enum for source of cRq
 typedef enum {Child, Dma} LLCRqSrc deriving(Bits, Eq, FShow);
 
-module mkLLBank#(
-    module#(LLCRqMshr#(cRqNum, wayT, tagT, Vector#(childNum, DirPend), cRqT)) mkLLMshr,
-    module#(LLPipe#(lgBankNum, childNum, wayNum, indexT, tagT, cRqIndexT)) mkLLPipeline
+module mkSelfInvLLBank#(
+    module#(LLCRqMshr#(cRqNum, wayT, tagT, SelfInvDirPend#(Bit#(TLog#(childNum))), cRqT)) mkLLMshr,
+    module#(SelfInvLLPipe#(lgBankNum, childNum, wayNum, indexT, tagT, cRqIndexT)) mkLLPipeline
 )(
     LLBank#(lgBankNum, childNum, wayNum, indexSz, tagSz, cRqNum, cRqIdT, dmaRqIdT)
 ) provisos(
     Alias#(childT, Bit#(TLog#(childNum))),
     Alias#(wayT, Bit#(TLog#(wayNum))),
-    Alias#(dirT, Vector#(childNum, Msi)),
+    Alias#(dirT, SelfInvDir#(childT)),
+    Alias#(dirPendT, SelfInvDirPend#(childT)),
     Alias#(indexT, Bit#(indexSz)),
     Alias#(tagT, Bit#(tagSz)),
     Alias#(cRqIndexT, Bit#(TLog#(cRqNum))),
@@ -161,7 +161,7 @@ module mkLLBank#(
     Alias#(toMemT, ToMemMsg#(ldMemRqIdT, void)),
     Alias#(toMemInfoT, ToMemInfo#(cRqIndexT)),
     Alias#(cRqT, LLRq#(cRqIdT, dmaRqIdT, childT)),
-    Alias#(cRqSlotT, LLCRqSlot#(wayT, tagT, Vector#(childNum, DirPend))), // cRq MSHR slot
+    Alias#(cRqSlotT, LLCRqSlot#(wayT, tagT, dirPendT)), // cRq MSHR slot
     Alias#(llCmdT, LLCmd#(childT, cRqIndexT)),
     Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, dirT, cacheOwnerT, void, RandRepInfo, Line, llCmdT)),
     // requirements
@@ -174,7 +174,7 @@ module mkLLBank#(
     Add#(cRqNum, b__, wayNum)
 );
 
-    LLCRqMshr#(cRqNum, wayT, tagT, Vector#(childNum, DirPend), cRqT) cRqMshr <- mkLLMshr;
+    LLCRqMshr#(cRqNum, wayT, tagT, dirPendT, cRqT) cRqMshr <- mkLLMshr;
 
     LLPipe#(lgBankNum, childNum, wayNum, indexT, tagT, cRqIndexT) pipeline <- mkLLPipeline;
 
@@ -720,38 +720,30 @@ module mkLLBank#(
         doAssert(cState == WaitSt || cState == WaitOldTag, 
             "only WaitSt and WaitOldTag needs req child"
         );
-        // find a child to downgrade
-        function Bool needSend(DirPend dp);
-            return dp matches tagged ToSend .s ? True : False;
-        endfunction
-        Maybe#(childT) childToDown = searchIndex(needSend, cSlot.dirPend);
-        doAssert(isValid(childToDown), ("should have a child to downgrade"));
-        childT child = fromMaybe(?, childToDown);
-        // get the state to downgrade to
-        Msi toState = ?;
-        if(cSlot.dirPend[child] matches tagged ToSend .st) begin
-            toState = st;
+        // find the child to downgrade
+        childT child = ?;
+        if(cSlot.dirPend matches tagged ToSend .c) begin
+            child = c;
         end
         else begin
-            doAssert(False, ("dirPend should be ToSend"));
+            doAssert(False, "should need to downgrade");
         end
         // send downgrade req: addr depends on state
         // either be cRq addr or replacing addr
+        // we always downgrade to S
         Addr rqAddr = cState == WaitSt ? cRq.addr : {cSlot.repTag, truncate(cRq.addr)};
         pRqRsToCT req = PRq (PRqMsg {
             addr: rqAddr,
-            toState: toState,
+            toState: S,
             child: child
         });
         toCQ.enq(req);
         // change dirPend
-        Vector#(childNum, DirPend) newDirPend = cSlot.dirPend;
-        newDirPend[child] = Waiting (toState);
         cRqMshr.sendRqToC.setSlot(n, LLCRqSlot { // keep cState the same
             way: cSlot.way,
             repTag: cSlot.repTag,
             waitP: cSlot.waitP,
-            dirPend: newDirPend
+            dirPend: Waiting (child)
         });
         $display("%t LL %m sendRqToC: ", $time,
             fshow(n), " ; ",
@@ -793,11 +785,9 @@ module mkLLBank#(
             // tag has been written into cache before sending req to parent
             ("cRqHit but tag or cs incorrect")
         );
-        // decide upgrade state
+        // decide upgrade state. Since we don't track S copies, we can't give E
+        // for a req to S.
         Msi toState = cRq.toState;
-        if(cRq.toState == S && cRq.canUpToE && ram.info.dir == replicate(I)) begin
-            toState = E;
-        end
         // update slot, data & send to indexQ
         // decide data validity using dir (which is more up to date than fromState)
         rsToCIndexQ.enq(LLRsInfo {
@@ -808,7 +798,13 @@ module mkLLBank#(
         cRqMshr.pipelineResp.setData(n, ram.info.dir[cRq.child] == I ? Valid (ram.line) : Invalid);
         // update child dir
         dirT newDir = ram.info.dir;
-        newDir[cRq.child] = toState;
+        if(toState >= E) begin
+            newDir.exChild = cRq.child;
+            newDir.state = toState;
+        end
+        else begin
+            doAssert(newDir.state == I, "should not have exclusive child");
+        end
         // update cs (may have E -> M)
         Msi newCs = ram.info.cs;
         if(toState == M) begin
@@ -903,7 +899,7 @@ module mkLLBank#(
     function Action cRqFromCEvict(cRqIndexT n, cRqT cRq, Maybe#(cRqIndexT) repSucc);
     action
         doAssert(isRqFromC(cRq.id), "only cRq from child can evict a line");
-        doAssert(ram.info.dir == replicate(I) && ram.info.cs > I,
+        doAssert(ram.info.dir.state == I && ram.info.cs > I,
             "only evict valid line which has no children"
         );
         // write back (only when line is M, otherwise silent drop)
@@ -918,7 +914,7 @@ module mkLLBank#(
             way: pipeOut.way, // use way from pipeline
             repTag: ram.info.tag, // record old tag for replacement to mem
             waitP: True, // waiting for mem resp
-            dirPend: replicate(Invalid) // children are all I
+            dirPend: Invalid // no exclusive child
         });
         cRqMshr.pipelineResp.setData(n, needWB ? Valid (ram.line) : Invalid); // replacement needs data
         // wake up successor which depends on this replacement
@@ -930,7 +926,7 @@ module mkLLBank#(
             info: CacheInfo {
                 tag: getTag(cRq.addr), // set to new tag (old tag is replaced)
                 cs: I,
-                dir: replicate(I),
+                dir: SelfInvDirPend {exChild: ?, state: I},
                 owner: Valid (CRqOwner {
                     mshrIdx: n, // owner is current cRq
                     replacing: False // replacement is done right now
@@ -954,41 +950,42 @@ module mkLLBank#(
         Maybe#(cRqIndexT) cRqEOC = cRqMshr.pipelineResp.searchEndOfChain(cRq.addr);
 
         // function to check whether children needs downgrade for req from child (miss no replace)
-        function Vector#(childNum, DirPend) getDirPendNonCompatForChild;
-            function DirPend initPend(childT i);
-                if(i == cRq.child) begin
-                    return ram.info.dir[i] <= cRq.fromState ? Invalid : Waiting (cRq.fromState);
+        function dirPendT getDirPendNonCompatForChild;
+            if(ram.info.dir.state >= E) begin
+                if(cRq.child == ram.info.dir.exChild) begin
+                    return Waiting (ram.info.dir.exChild);
                 end
                 else begin
-                    Msi compatState = toCompat(cRq.toState);
-                    return ram.info.dir[i] <= compatState ? Invalid : ToSend (compatState);
+                    return ToSend (ram.info.dir.exChild);
                 end
-            endfunction
-            Vector#(childNum, childT) idxVec = genWith(fromInteger);
-            return map(initPend, idxVec);
+            end
+            else begin
+                return Invalid;
+            end
         endfunction
 
         // function to check whether children needs downgrade for DMA req (miss by children state)
-        function Vector#(childNum, DirPend) getDirPendNonCompatForDma;
-            function DirPend initPend(childT i);
-                Msi compatState = toCompat(cRq.toState);
-                return ram.info.dir[i] <= compatState ? Invalid : ToSend (compatState);
-            endfunction
-            Vector#(childNum, childT) idxVec = genWith(fromInteger);
-            return map(initPend, idxVec);
+        function dirPendT getDirPendNonCompatForDma;
+            if(ram.info.dir.state >= E) begin
+                return ToSend (ram.info.dir.exChild);
+            end
+            else begin
+                return Invalid;
+            end
         endfunction
 
         // function to check whether children needs downgrade (miss with replace)
-        function Vector#(childNum, DirPend) getDirPendNonI;
-            function DirPend initPend(childT i);
-                return ram.info.dir[i] == I ? Invalid : ToSend (I);
-            endfunction
-            Vector#(childNum, childT) idxVec = genWith(fromInteger);
-            return map(initPend, idxVec);
+        function dirPendT getDirPendReplace;
+            if(ram.info.dir.state >= E) begin
+                return ToSend (ram.info.dir.exChild);
+            end
+            else begin
+                return Invalid;
+            end
         endfunction
 
         // function to process cRq from child miss without replacement (MSHR slot may have garbage)
-        function Action cRqFromCMissNoReplacement(Vector#(childNum, DirPend) dirPend);
+        function Action cRqFromCMissNoReplacement(dirPendT dirPend);
         action
             doAssert(isRqFromC(cRq.id), "should be cRq from child");
             // it is impossible in LLC to have slot.waitP == True in this function
@@ -1001,7 +998,7 @@ module mkLLBank#(
                     mshrIdx: n,
                     t: Ld
                 });
-                doAssert(ram.info.dir == replicate(I), "dir should be all I");
+                doAssert(ram.info.dir.state == I, "dir should not have exclusive child");
             end
             // update mshr (data field is irrelevant, should be already invalid)
             cRqMshr.pipelineResp.setStateSlot(n, WaitSt, LLCRqSlot {
@@ -1025,7 +1022,7 @@ module mkLLBank#(
         endfunction
 
         // function to process cRq from dma miss by children states (MSHR slot may have garbage)
-        function Action cRqFromDmaMissByChildren(Vector#(childNum, DirPend) dirPend);
+        function Action cRqFromDmaMissByChildren(dirPendT dirPend);
         action
             doAssert(isRqFromDma(cRq.id), "should be cRq from dma");
             doAssert(ram.info.tag == getTag(cRq.addr) && ram.info.cs > I,
@@ -1057,10 +1054,10 @@ module mkLLBank#(
         endfunction
 
         // function to do replacement for cRq from child
-        function Action cRqFromCReplacement(Vector#(childNum, DirPend) dirPend);
+        function Action cRqFromCReplacement(dirPendT dirPend);
         action
             doAssert(isRqFromC(cRq.id), "should be cRq from child");
-            if(dirPend == replicate(Invalid)) begin
+            if(dirPend == Invalid) begin
                 // directly evict the line
                 // this cRq cannot have repSucc, since it has not occupied the line
                 Maybe#(cRqIndexT) repSucc = pipeOutRepSucc;
@@ -1095,7 +1092,7 @@ module mkLLBank#(
         // function to set cRq to Depend, and make no further change to cache
         function Action cRqSetDepNoCacheChange;
         action
-            cRqMshr.pipelineResp.setStateSlot(n, Depend, getLLCRqSlotInitVal(getDirPendInitVal));
+            cRqMshr.pipelineResp.setStateSlot(n, Depend, getLLCRqSlotInitVal(getSelfInvDirPendInitVal));
             pipeline.deqWrite(Invalid, pipeOut.ram, False);
         endaction
         endfunction
@@ -1146,8 +1143,8 @@ module mkLLBank#(
                 // just check whether children cache are compatible
                 if(cRq.id matches tagged Child ._i) begin
                     // req from child, get dir pend
-                    Vector#(childNum, DirPend) dirPend = getDirPendNonCompatForChild;
-                    if(dirPend == replicate(Invalid)) begin
+                    dirPendT dirPend = getDirPendNonCompatForChild;
+                    if(dirPend == Invalid) begin
                         $display("%t LL %m pipelineResp: cRq from child: own by itself, hit", $time);
                         cRqFromCHit(n, cRq);
                     end
@@ -1160,8 +1157,8 @@ module mkLLBank#(
                 end
                 else begin
                     // req from DMA, get dir pend
-                    Vector#(childNum, DirPend) dirPend = getDirPendNonCompatForDma;
-                    if(dirPend == replicate(Invalid)) begin
+                    dirPendT dirPend = getDirPendNonCompatForDma;
+                    if(dirPend == Invalid) begin
                         $display("%t LL %m pipelineResp: cRq from dma: own by itself, hit", $time);
                         cRqFromDmaHit(n, cRq);
                     end
@@ -1193,8 +1190,8 @@ module mkLLBank#(
                 if(cRq.id matches tagged Child ._i) begin
                     // cRq from child
                     if(ram.info.cs == I || ram.info.tag == getTag(cRq.addr)) begin
-                        // No Replacement necessary, check dir
-                        Vector#(childNum, DirPend) dirPend = getDirPendNonCompatForChild;
+                        // No Replacement necessary, check dir (dir is not garbage even when cs is I)
+                        dirPendT dirPend = getDirPendNonCompatForChild;
                         if(ram.info.cs > I && dirPend == replicate(Invalid)) begin
                             $display("%t LL %m pipelineResp: cRq: no owner, hit", $time);
                             cRqFromCHit(n, cRq);
@@ -1208,7 +1205,7 @@ module mkLLBank#(
                     end
                     else begin
                         // need replacement, check dir
-                        Vector#(childNum, DirPend) dirPend = getDirPendNonI;
+                        dirPendT dirPend = getDirPendReplace;
                         $display("%t LL %m pipelineResp: cRq: no owner, replace: ", $time,
                             fshow(dirPend)
                         );
@@ -1216,11 +1213,11 @@ module mkLLBank#(
                     end
                 end
                 else begin
-                    Vector#(childNum, DirPend) dirPend = getDirPendNonCompatForDma;
+                    dirPendT dirPend = getDirPendNonCompatForDma;
                     // cRq from DMA
                     if(ram.info.cs > I && ram.info.tag == getTag(cRq.addr)) begin
                         // hit in LLC, check dir
-                        if(dirPend == replicate(Invalid)) begin
+                        if(dirPend == Invalid) begin
                             cRqFromDmaHit(n, cRq);
                         end
                         else begin
@@ -1268,11 +1265,11 @@ module mkLLBank#(
         doAssert(ram.info.cs >= cRq.toState && ram.info.tag == getTag(cRq.addr),
             "mRs must be tag match & have enough cs"
         );
-        doAssert(ram.info.dir == replicate(I), "all children must be I");
+        doAssert(ram.info.dir.state == I, "no exclusive child");
         doAssert(!cOwner.replacing, "mRs cannot hit on replacing line");
         doAssert(cSlot.way == pipeOut.way, "mRs should hit on way in MSHR slot");
         doAssert(cSlot.waitP, "mRs should match cRq which is waiting for it");
-        doAssert(cSlot.dirPend == replicate(Invalid),
+        doAssert(cSlot.dirPend == Invalid,
             "cRq that needs mRs should not have children to wait for"
         );
         // cRq hits since all children are I
@@ -1287,6 +1284,8 @@ module mkLLBank#(
         $display("%t LL %m pipelineResp: cRs: ", $time, fshow(child));
         // cs should be not I
         doAssert(ram.info.cs > I, "cRs should hit on a line");
+        // There cannot be exclusive child after downgrade
+        doAssert(ram.info.dir.state == I, "no exclusive child");
         // check owner of the line
         if(ram.info.owner matches tagged Valid .cOwner) begin
             cRqT cRq = pipeOutCRq;
@@ -1306,80 +1305,33 @@ module mkLLBank#(
                 doAssert(cState == WaitOldTag, "must be waiting for old tag");
                 doAssert(!cSlot.waitP, "cannot wait for parent while replacing");
                 doAssert(cSlot.repTag == ram.info.tag, "should match replacing tag");
-                // is replacing, update dirPend
-                Vector#(childNum, DirPend) newDirPend = cSlot.dirPend;
-                if(ram.info.dir[child] == I) begin
-                    newDirPend[child] = Invalid;
-                end
-                // check whether replacement is done
-                if(newDirPend == replicate(Invalid)) begin
-                    // replacement done, evict line
-                    Maybe#(cRqIndexT) repSucc = pipeOutRepSucc;
-                    cRqFromCEvict(cOwner.mshrIdx, cRq, repSucc);
-                    $display("%t LL %m pipelineResp: cRs: match cRq: replace done: ", $time,
-                        fshow(repSucc)
-                    );
-                end
-                else begin
-                    // replacement is still ongoing, just deq pipe & write ram & update dirPend
-                    pipeline.deqWrite(Invalid, ram, False);
-                    cRqMshr.pipelineResp.setStateSlot(cOwner.mshrIdx, WaitOldTag, LLCRqSlot {
-                        way: cSlot.way,
-                        repTag: cSlot.repTag,
-                        waitP: cSlot.waitP,
-                        dirPend: newDirPend
-                    });
-                    $display("%t LL %m pipelineResp: cRs: match cRq: replace not done: ", $time,
-                        fshow(newDirPend)
-                    );
-                end
+                // Since there is no exclusive child after downgrade, dirPend
+                // must become invalid. So replacement is done, evict line
+                Maybe#(cRqIndexT) repSucc = pipeOutRepSucc;
+                cRqFromCEvict(cOwner.mshrIdx, cRq, repSucc);
+                $display("%t LL %m pipelineResp: cRs: match cRq: replace done: ", $time,
+                    fshow(repSucc)
+                );
             end
             else begin
                 // child downgrade, not replace: req can be from child or dma
                 doAssert(cState == WaitSt, "must be waiting for child/parent state");
                 doAssert(ram.info.tag == getTag(cRq.addr), "cRq tag should match cRs hit line");
                 doAssert(!cSlot.waitP, "cs > I, so cannot wait for memory");
-                // in WaitSt, update dirPend
-                Vector#(childNum, DirPend) newDirPend = cSlot.dirPend;
-                case(cSlot.dirPend[child]) matches
-                    tagged ToSend .st: begin
-                        if(st >= ram.info.dir[child]) begin
-                            newDirPend[child] = Invalid;
-                        end
-                    end
-                    tagged Waiting .st: begin
-                        if(st >= ram.info.dir[child]) begin
-                            newDirPend[child] = Invalid;
-                        end
-                    end
-                endcase
-                $display("%t LL %m pipelineResp: cRs: match cRq: cRq in WaitSt: ", $time,
-                    fshow(newDirPend)
-                );
-                // check hit or miss
-                if(newDirPend == replicate(Invalid)) begin
-                    if(cRq.id matches tagged Child ._i) begin
-                        cRqFromCHit(cOwner.mshrIdx, cRq);
-                    end
-                    else begin
-                        cRqFromDmaHit(cOwner.mshrIdx, cRq);
-                    end
+                // Since there is no exclusive child after downgrade, dirPend
+                // must become invalid, and cRq hits
+                $display("%t LL %m pipelineResp: cRs: match cRq: hit", $time);
+                if(cRq.id matches tagged Child ._i) begin
+                    cRqFromCHit(cOwner.mshrIdx, cRq);
                 end
                 else begin
-                    // still wait for children: deq pipe & write ram & update dirPend
-                    pipeline.deqWrite(Invalid, ram, False);
-                    cRqMshr.pipelineResp.setStateSlot(cOwner.mshrIdx, WaitSt, LLCRqSlot {
-                        way: cSlot.way,
-                        repTag: cSlot.repTag,
-                        waitP: cSlot.waitP,
-                        dirPend: newDirPend
-                    });
+                    cRqFromDmaHit(cOwner.mshrIdx, cRq);
                 end
             end
         end
         else begin
             // does not match any cRq, so just deq pipe & write ram
-            $display("%t LL %m pipelineResp: cRs: no owner: ", $time);
+            $display("%t LL %m pipelineResp: cRs: no owner", $time);
             pipeline.deqWrite(Invalid, ram, False);
         end
     endrule

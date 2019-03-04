@@ -367,6 +367,10 @@ typedef union tagged {
     Msi Waiting; // waiting for down resp for some state
 } DirPend deriving(Bits, Eq, FShow);
 
+function Vector#(childNum, DirPend) getDirPendInitVal;
+    return replicate(Invalid);
+endfunction
+
 function Bool getNeedReqChild(Vector#(childNum, DirPend) dirPend);
     // function to determine whether we need to send req to some children
     function Bool isToSend(DirPend dp);
@@ -378,6 +382,21 @@ function Bool getNeedReqChild(Vector#(childNum, DirPend) dirPend);
         end
     endfunction
     return any(isToSend, dirPend);
+endfunction
+
+// Self-inv cache dir pending bits
+typedef union tagged {
+    void Invalid;
+    childT ToSend;
+    childT Waiting;
+} SelfInvDirPend#(type childT) deriving(Bits, Eq, FShow);
+
+function SelfInvDirPend#(type childT) getSelfInvDirPendInitVal;
+    return Invalid;
+endfunction
+
+function Bool getSelfInvNeedReqChild(SelfInvDirPend#(childT) dirPend);
+    return dirPend matches tagged ToSend .c ? True : False;
 endfunction
 
 // useful functions

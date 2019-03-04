@@ -35,20 +35,20 @@ import RandomReplace::*;
 typedef struct {
     Addr addr;
     cRqIdxT mshrIdx;
-} LLPipeCRqIn#(type cRqIdxT) deriving(Bits, Eq, FShow);
+} SelfInvLLPipeCRqIn#(type cRqIdxT) deriving(Bits, Eq, FShow);
 
 typedef struct {
     Addr addr;
     Msi toState; // come from req in MSHR (E or M)
     Line data; // come from memory must be valid
     wayT way; // come from MSHR
-} LLPipeMRsIn#(type wayT) deriving(Bits, Eq, FShow);
+} SelfInvLLPipeMRsIn#(type wayT) deriving(Bits, Eq, FShow);
 
 typedef union tagged {
-    LLPipeCRqIn#(cRqIdxT) CRq;
+    SelfInvLLPipeCRqIn#(cRqIdxT) CRq;
     CRsMsg#(childT) CRs;
-    LLPipeMRsIn#(wayT) MRs;
-} LLPipeIn#(
+    SelfInvLLPipeMRsIn#(wayT) MRs;
+} SelfInvLLPipeIn#(
     type childT,
     type wayT,
     type cRqIdxT
@@ -59,9 +59,15 @@ typedef union tagged {
     cRqIdxT LLCRq; // mshr idx of the cRq
     childT LLCRs; // which child is downgrading
     void LLMRs;
-} LLCmd#(type childT, type cRqIdxT) deriving (Bits, Eq, FShow);
+} SelfInvLLCmd#(type childT, type cRqIdxT) deriving (Bits, Eq, FShow);
 
-interface LLPipe#(
+// Track only exclusive child in directory
+typedef struct {
+    childT exChild;
+    Msi state; // I/E/M, we don't track S
+} SelfInvDir#(type childT) deriving(Bits, Eq, FShow);
+
+interface SelfInvLLPipe#(
     numeric type lgBankNum,
     numeric type childNum,
     numeric type wayNum,
@@ -69,23 +75,23 @@ interface LLPipe#(
     type tagT,
     type cRqIdxT
 );
-    method Action send(LLPipeIn#(Bit#(TLog#(childNum)), Bit#(TLog#(wayNum)), cRqIdxT) r);
+    method Action send(SelfInvLLPipeIn#(Bit#(TLog#(childNum)), Bit#(TLog#(wayNum)), cRqIdxT) r);
     method Bool notEmpty;
     method PipeOut#(
         Bit#(TLog#(wayNum)),
-        tagT, Msi, Vector#(childNum, Msi),
+        tagT, Msi, SelfInvDir#(Bit#(TLog#(childNum))),
         Maybe#(CRqOwner#(cRqIdxT)), void, RandRepInfo, // no other
-        Line, LLCmd#(Bit#(TLog#(childNum)), cRqIdxT)
+        Line, SelfInvLLCmd#(Bit#(TLog#(childNum)), cRqIdxT)
     ) first;
     method PipeOut#(
         Bit#(TLog#(wayNum)),
-        tagT, Msi, Vector#(childNum, Msi),
+        tagT, Msi, SelfInvDir#(Bit#(TLog#(childNum))),
         Maybe#(CRqOwner#(cRqIdxT)), void, RandRepInfo, // no other
-        Line, LLCmd#(Bit#(TLog#(childNum)), cRqIdxT)
+        Line, SelfInvLLCmd#(Bit#(TLog#(childNum)), cRqIdxT)
     ) unguard_first;
     method Action deqWrite(
         Maybe#(cRqIdxT) swapRq,
-        RamData#(tagT, Msi, Vector#(childNum, Msi), Maybe#(CRqOwner#(cRqIdxT)), void, Line) wrRam, // always write BRAM
+        RamData#(tagT, Msi, SelfInvDir#(Bit#(TLog#(childNum))), Maybe#(CRqOwner#(cRqIdxT)), void, Line) wrRam, // always write BRAM
         Bool updateRep
     );
 endinterface
@@ -94,35 +100,35 @@ endinterface
 typedef struct {
     Addr addr;
     childT child;
-} LLPipeCRsCmd#(type childT) deriving(Bits, Eq, FShow);
+} SelfInvLLPipeCRsCmd#(type childT) deriving(Bits, Eq, FShow);
 
 typedef struct {
     Addr addr;
     wayT way;
-} LLPipeMRsCmd#(type wayT) deriving(Bits, Eq, FShow);
+} SelfInvLLPipeMRsCmd#(type wayT) deriving(Bits, Eq, FShow);
 
 typedef union tagged {
-    LLPipeCRqIn#(cRqIdxT) CRq;
-    LLPipeCRsCmd#(childT) CRs;
-    LLPipeMRsCmd#(wayT) MRs;
-} LLPipeCmd#(
+    SelfInvLLPipeCRqIn#(cRqIdxT) CRq;
+    SelfInvLLPipeCRsCmd#(childT) CRs;
+    SelfInvLLPipeMRsCmd#(wayT) MRs;
+} SelfInvLLPipeCmd#(
     type childT,
     type wayT,
     type cRqIdxT
 ) deriving (Bits, Eq, FShow);
 
-module mkLLPipe(
-    LLPipe#(lgBankNum, childNum, wayNum, indexT, tagT, cRqIdxT)
+module mkSelfInvLLPipe(
+    SelfInvLLPipe#(lgBankNum, childNum, wayNum, indexT, tagT, cRqIdxT)
 ) provisos(
     Alias#(childT, Bit#(TLog#(childNum))),
     Alias#(wayT, Bit#(TLog#(wayNum))),
-    Alias#(dirT, Vector#(childNum, Msi)),
+    Alias#(dirT, SelfInvDir#(childT)),
     Alias#(ownerT, Maybe#(CRqOwner#(cRqIdxT))),
     Alias#(otherT, void), // no other cache info
     Alias#(repT, RandRepInfo), // use random replace
-    Alias#(pipeInT, LLPipeIn#(childT, wayT, cRqIdxT)),
-    Alias#(pipeCmdT, LLPipeCmd#(childT, wayT, cRqIdxT)),
-    Alias#(llCmdT, LLCmd#(childT, cRqIdxT)),
+    Alias#(pipeInT, SelfInvLLPipeIn#(childT, wayT, cRqIdxT)),
+    Alias#(pipeCmdT, SelfInvLLPipeCmd#(childT, wayT, cRqIdxT)),
+    Alias#(llCmdT, SelfInvLLCmd#(childT, cRqIdxT)),
     Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, dirT, ownerT, otherT, repT, Line, llCmdT)), // output type
     Alias#(infoT, CacheInfo#(tagT, Msi, dirT, ownerT, otherT)),
     Alias#(ramDataT, RamData#(tagT, Msi, dirT, ownerT, otherT, Line)),
@@ -152,7 +158,7 @@ module mkLLPipe(
             infoRam[i].wrReq(initIndex, CacheInfo {
                 tag: 0,
                 cs: I,
-                dir: replicate(I),
+                dir: SelfInvDirPend {exChild: ?, state: I},
                 owner: Invalid,
                 other: ?
             });
@@ -262,22 +268,18 @@ module mkLLPipe(
     );
     actionvalue
         // update dir
-        dirT newDir = oldDir;
-        if(cmd matches tagged CRs .cRs) begin
-            if(dataV) begin
-                doAssert(oldDir[cRs.child] >= E, "cRs with data, dir must >= E");
-            end
-            else begin
-                doAssert(oldDir[cRs.child] < M, "cRs without data, dir must < M");
-            end
-            if(oldDir[cRs.child] == M) begin
-                doAssert(dataV, "must have data");
-            end
-            newDir[cRs.child] = toState;
+        // The exclusive child is downgraded. Since we don't track S, just make
+        // dir invalid, child field is useless for I
+        dirT newDir = SelfInvLLDir {exChild: ?, state: I};
+        doAssert(oldDir.state >= E && toState <= S, "no more exclusive child");
+        doAssert(cmd matches tagged CRs .cRs &&& oldDir.exChild == cRs.child,
+                 "cRs child should match");
+        if(!dataV) begin
+            doAssert(oldDir.state < M, "cRs without data, dir must < M");
         end
-        else begin
-            // should not happen
-            doAssert(False, "only cRs updates dir");
+        if(oldDir.state == M) begin
+            doAssert(dataV, "downgrade from M must have data");
+            doAssert(oldCs == M, "cs must be M");
         end
         // update cs
         // XXX since child can upgrade from E to M silently, use data valid

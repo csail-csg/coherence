@@ -56,35 +56,26 @@ typedef struct {
     wayT way; // the way to occupy
     tagT repTag; // tag being replaced, used in sending down req to children
     Bool waitP; // wait parent resp
-    Vector#(childNum, DirPend) dirPend; // pending child downgrade
-} LLCRqSlot#(numeric type childNum, type wayT, type tagT) deriving(Bits, Eq, FShow);
-
-instance DefaultValue#(LLCRqSlot#(childNum, wayT, tagT));
-    defaultValue = LLCRqSlot {
-        way: ?,
-        repTag: ?,
-        waitP: False,
-        dirPend: replicate(Invalid)
-    };
-endinstance
+    dirPendT dirPend; // pending child downgrade
+} LLCRqSlot#(type wayT, type tagT, type dirPendT) deriving(Bits, Eq, FShow);
 
 typedef struct {
     reqT req;
     LLCRqState state;
     Bool waitP;
-    Vector#(childNum, DirPend) dirPend;
-} LLCRqMshrStuck#(numeric type childNum, type reqT) deriving(Bits, Eq, FShow);
+    dirPendT dirPend;
+} LLCRqMshrStuck#(type dirPendT, type reqT) deriving(Bits, Eq, FShow);
 
 // interface for cRq/mRs/cRsTransfer
 interface LLCRqMshr_transfer#(
-    numeric type childNum,
     numeric type cRqNum,
     type wayT,
     type tagT,
+    type dirPendT,
     type reqT // child req type
 );
     method reqT getRq(Bit#(TLog#(cRqNum)) n);
-    method LLCRqSlot#(childNum, wayT, tagT) getSlot(Bit#(TLog#(cRqNum)) n);
+    method LLCRqSlot#(wayT, tagT, dirPendT) getSlot(Bit#(TLog#(cRqNum)) n);
     method ActionValue#(Bit#(TLog#(cRqNum))) getEmptyEntryInit(reqT r, Maybe#(Line) d);
     // check if any empty MSHR entry is available in order to get MSHR blocking
     // stats. The argument is not really used here, just in case some other
@@ -99,14 +90,14 @@ endinterface
 
 // interface for sendToM
 interface LLCRqMshr_sendToM#(
-    numeric type childNum,
     numeric type cRqNum,
     type wayT,
     type tagT,
+    type dirPendT,
     type reqT // child req type
 );
     method reqT getRq(Bit#(TLog#(cRqNum)) n);
-    method LLCRqSlot#(childNum, wayT, tagT) getSlot(Bit#(TLog#(cRqNum)) n);
+    method LLCRqSlot#(wayT, tagT, dirPendT) getSlot(Bit#(TLog#(cRqNum)) n);
     method Maybe#(Line) getData(Bit#(TLog#(cRqNum)) n);
 endinterface
 
@@ -122,16 +113,16 @@ endinterface
 
 // interface for sendRqToC
 interface LLCRqMshr_sendRqToC#(
-    numeric type childNum,
     numeric type cRqNum,
     type wayT,
     type tagT,
+    type dirPendT,
     type reqT // child req type
 );
     method reqT getRq(Bit#(TLog#(cRqNum)) n);
     method LLCRqState getState(Bit#(TLog#(cRqNum)) n);
-    method LLCRqSlot#(childNum, wayT, tagT) getSlot(Bit#(TLog#(cRqNum)) n);
-    method Action setSlot(Bit#(TLog#(cRqNum)) n, LLCRqSlot#(childNum, wayT, tagT) s);
+    method LLCRqSlot#(wayT, tagT, dirPendT) getSlot(Bit#(TLog#(cRqNum)) n);
+    method Action setSlot(Bit#(TLog#(cRqNum)) n, LLCRqSlot#(wayT, tagT, dirPendT) s);
     // find cRq that needs to send req to child to downgrade
     // (either replacement, or incompatible children states)
     // we can pass in a suggested req idx (which will have priority)
@@ -140,22 +131,22 @@ endinterface
 
 // interface for pipelineResp_xxx
 interface LLCRqMshr_pipelineResp#(
-    numeric type childNum,
     numeric type cRqNum,
     type wayT,
     type tagT,
+    type dirPendT,
     type reqT // child req type
 );
     method reqT getRq(Bit#(TLog#(cRqNum)) n);
     method LLCRqState getState(Bit#(TLog#(cRqNum)) n);
-    method LLCRqSlot#(childNum, wayT, tagT) getSlot(Bit#(TLog#(cRqNum)) n);
+    method LLCRqSlot#(wayT, tagT, dirPendT) getSlot(Bit#(TLog#(cRqNum)) n);
     method Maybe#(Line) getData(Bit#(TLog#(cRqNum)) n);
     method Maybe#(Bit#(TLog#(cRqNum))) getAddrSucc(Bit#(TLog#(cRqNum)) n);
     method Maybe#(Bit#(TLog#(cRqNum))) getRepSucc(Bit#(TLog#(cRqNum)) n);
     method Action setData(Bit#(TLog#(cRqNum)) n, Maybe#(Line) d);
     method Action setStateSlot(
         Bit#(TLog#(cRqNum)) n, LLCRqState state, 
-        LLCRqSlot#(childNum, wayT, tagT) slot
+        LLCRqSlot#(wayT, tagT, dirPendT) slot
     );
     method Action setAddrSucc( // same address successor
         Bit#(TLog#(cRqNum)) n, 
@@ -172,36 +163,50 @@ interface LLCRqMshr_pipelineResp#(
 endinterface
 
 interface LLCRqMshr#(
-    numeric type childNum, 
     numeric type cRqNum, 
     type wayT,
     type tagT,
+    type dirPendT,
     type reqT // child req type
 );
-    interface LLCRqMshr_transfer#(childNum, cRqNum, wayT, tagT, reqT) transfer;
+    interface LLCRqMshr_transfer#(cRqNum, wayT, tagT, dirPendT, reqT) transfer;
     interface LLCRqMshr_mRsDeq#(cRqNum) mRsDeq;
-    interface LLCRqMshr_sendToM#(childNum, cRqNum, wayT, tagT, reqT) sendToM;
+    interface LLCRqMshr_sendToM#(cRqNum, wayT, tagT, dirPendT, reqT) sendToM;
     interface LLCRqMshr_sendRsToDmaC#(cRqNum, reqT) sendRsToDmaC;
-    interface LLCRqMshr_sendRqToC#(childNum, cRqNum, wayT, tagT, reqT) sendRqToC;
-    interface LLCRqMshr_pipelineResp#(childNum, cRqNum, wayT, tagT, reqT) pipelineResp;
+    interface LLCRqMshr_sendRqToC#(cRqNum, wayT, tagT, dirPendT, reqT) sendRqToC;
+    interface LLCRqMshr_pipelineResp#(cRqNum, wayT, tagT, dirPendT, reqT) pipelineResp;
     // detect deadlock: only in use when macro CHECK_DEADLOCK is defined
-    interface Get#(LLCRqMshrStuck#(childNum, reqT)) stuck;
+    interface Get#(LLCRqMshrStuck#(dirPendT, reqT)) stuck;
 endinterface
+
+function LLCRqSlot#(wayT, tagT, dirPendT) getLLCRqSlotInitVal(dirPendT dirPendInitVal);
+    return LLCRqSlot {
+        way: ?,
+        repTag: ?,
+        waitP: False,
+        dirPend: dirPendInitVal
+    };
+endfunction
 
 //////////////////
 // safe version //
 //////////////////
-module mkLLCRqMshrSafe#(
-    function Addr getAddrFromReq(reqT r)
+module mkLLCRqMshr#(
+    function Addr getAddrFromReq(reqT r),
+    function Bool needDownReq(dirPendT dirPend),
+    dirPendT dirPendInitVal
 )(
-    LLCRqMshr#(childNum, cRqNum, wayT, tagT, reqT)
+    LLCRqMshr#(cRqNum, wayT, tagT, dirPendT, reqT)
 ) provisos (
     Alias#(cRqIndexT, Bit#(TLog#(cRqNum))),
-    Alias#(slotT, LLCRqSlot#(childNum, wayT, tagT)),
+    Alias#(slotT, LLCRqSlot#(wayT, tagT, dirPendT)),
     Alias#(wayT, Bit#(_waySz)),
     Alias#(tagT, Bit#(_tagSz)),
+    Bits#(dirPendT, _dirPendSz),
     Bits#(reqT, _reqSz)
 );
+    slotT slotInitVal = getLLCRqSlotInitVal(dirPendInitVal);
+
     // logical ordering: sendToM < sendRqToC < sendRsToDma/C < mRsDeq < pipelineResp < transfer
     // We put pipelineResp < transfer to cater for deq < enq of cache pipeline
     // EHR ports
@@ -219,7 +224,7 @@ module mkLLCRqMshrSafe#(
     // summary bit of dirPend in each entry: asserted when some dirPend[i] = ToSend
     Vector#(cRqNum, Ehr#(3, Bool)) needReqChildVec <- replicateM(mkEhr(False));
     // cRq mshr slots
-    Vector#(cRqNum, Ehr#(3, slotT)) slotVec <- replicateM(mkEhr(defaultValue));
+    Vector#(cRqNum, Ehr#(3, slotT)) slotVec <- replicateM(mkEhr(slotInitVal));
     // data valid bit
     Vector#(cRqNum, Ehr#(3, Bool)) dataValidVec <- replicateM(mkEhr(False));
     // data values
@@ -248,7 +253,7 @@ module mkLLCRqMshrSafe#(
 
 `ifdef CHECK_DEADLOCK
     MshrDeadlockChecker#(cRqNum) checker <- mkMshrDeadlockChecker;
-    FIFO#(LLCRqMshrStuck#(childNum, reqT)) stuckQ <- mkFIFO1;
+    FIFO#(LLCRqMshrStuck#(dirPendT, reqT)) stuckQ <- mkFIFO1;
 
     (* fire_when_enabled *)
     rule checkDeadlock;
@@ -268,7 +273,7 @@ module mkLLCRqMshrSafe#(
     action
         slotVec[n][ehrPort] <= s;
         // set dirPend summary bit
-        needReqChildVec[n][ehrPort] <= getNeedReqChild(s.dirPend);
+        needReqChildVec[n][ehrPort] <= needDownReq(s.dirPend);
     endaction
     endfunction
 
@@ -286,7 +291,7 @@ module mkLLCRqMshrSafe#(
             cRqIndexT n = emptyEntryQ.first;
             reqVec[n][transfer_port] <= r;
             stateVec[n][transfer_port] <= Init;
-            writeSlot(transfer_port, n, defaultValue);
+            writeSlot(transfer_port, n, slotInitVal);
             dataValidVec[n][transfer_port] <= isValid(d);
             dataVec[n][transfer_port] <= validValue(d);
             addrSuccValidVec[n][transfer_port] <= False;
@@ -440,16 +445,3 @@ module mkLLCRqMshrSafe#(
 `endif
 endmodule
 
-// exported version
-module mkLLCRqMshr#(
-    function Addr getAddrFromReq(reqT r)
-)(
-    LLCRqMshr#(childNum, cRqNum, wayT, tagT, reqT)
-) provisos (
-    Alias#(wayT, Bit#(_waySz)),
-    Alias#(tagT, Bit#(_tagSz)),
-    Bits#(reqT, _reqSz)
-);
-    let m <- mkLLCRqMshrSafe(getAddrFromReq);
-    return m;
-endmodule

@@ -21,6 +21,7 @@
 // CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
+import Vector::*;
 import CacheUtils::*;
 import Types::*;
 import CCTypes::*;
@@ -31,12 +32,12 @@ import LLBank::*;
 
 (* synthesize *)
 module mkLastLvCRqMshr(
-    LLCRqMshr#(LLChildNum, LLCRqNum, LLWay, LLTag, cRqT)
+    LLCRqMshr#(LLCRqNum, LLWay, LLTag, Vector#(LLChildNum, DirPend), cRqT)
 ) provisos(
     Alias#(cRqT, LLRq#(LLCRqId, DmaRqId, LLChild))
 );
     function Addr getAddr(cRqT r) = r.addr;
-    let m <- mkLLCRqMshr(getAddr);
+    let m <- mkLLCRqMshr(getAddr, getNeedReqChild, getDirPendInitVal);
     return m;
 endmodule
 

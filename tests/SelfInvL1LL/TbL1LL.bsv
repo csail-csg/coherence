@@ -36,13 +36,12 @@ import RegFile::*;
 import Connectable::*;
 import GetPut::*;
 import ClientServer::*;
-import AtomicMem::*;
 import DelayMemTypes::*;
 import IdealDelayMem::*;
 import Printf::*;
 import ConfigReg::*;
 
-import L1LL::*;
+import SelfInvL1LL::*;
 
 // FIXME assume no banking
 
@@ -155,15 +154,103 @@ function Bool getDmaReqStall(ReqStall x);
 `endif
 endfunction
 
-// update cache line
 // test FSM
 typedef enum {InitTable, InitAddr, Idle, Process, Done} TestFSM deriving(Bits, Eq, FShow);
+
+// reference WMM model
+import "BDPI" function Action wmmInit(Bit#(8) core_num, Bit#(32) index_num, Bit#(32) tag_num);
+import "BDPI" function ActionValue#(Bit#(8)) wmmFindLine(Bit#(8) core, Bit#(32) index, Bit#(32) tag, Bit#(512) line);
+import "BDPI" function ActionValue#(Bit#(8)) wmmFindData(Bit#(8) core, Bit#(32) index, Bit#(32) tag, Bit#(8) sel, Bit#(64) data);
+import "BDPI" function ActionValue#(Bit#(512)) wmmReadMemLine(Bit#(32) index, Bit#(32) tag);
+import "BDPI" function ActionValue#(Bit#(64)) wmmReadMemData(Bit#(32) index, Bit#(32) tag, Bit#(8) sel);
+import "BDPI" function Action wmmWriteMemLine(Bit#(32) index, Bit#(32) tag, Bit#(512) line);
+import "BDPI" function Action wmmWriteMemData(Bit#(32) index, Bit#(32) tag, Bit#(8) sel, Bit#(64) data);
+import "BDPI" function Action wmmClearAddr(Bit#(8) core, Bit#(32) index, Bit#(32) tag);
+import "BDPI" function Action wmmReconcile(Bit#(8) core);
+import "BDPI" function Action wmmPushStale(Bit#(8) core, Bit#(32) index, Bit#(32) tag);
+
+interface RefMem;
+    method ActionValue#(Bool) findLine(LLChild child, Addr a, Line line);
+    method ActionValue#(Bool) findData(LLChild child, Addr a, Data data);
+    method ActionValue#(Line) readMemLine(Addr a);
+    method ActionValue#(Data) readMemData(Addr a);
+    method Action writeMemLine(Addr a, Line line);
+    method Action writeMemData(Addr a, Data data);
+    method Action clearAddr(LLChild child, Addr a);
+    method Action reconcile(LLChild child);
+    method Action pushStale(LLChild child, Addr a);
+endinterface
+
+module mkRefMem(RefMem) provisos(
+    NumAlias#(LgLLBankNum, 0) // Only one LL bank
+);
+    Reg#(Bool) inited <- mkReg(False);
+
+    rule doInit(!inited);
+        wmmInit(fromInteger(valueof(L1Num)), fromInteger(valueof(IndexNum)), fromInteger(valueof(TagNum)));
+        inited <= True;
+    endrule
+
+    function Bit#(32) getIndex(Addr a);
+        LLCIndex idx = truncate(a >> valueof(LgLineSzBytes);
+        return zeroExtend(idx);
+    endfunction
+
+    function Bit#(32) getTag(Addr a);
+        LLCTag tag = truncateLSB(a);
+        return truncate(tag);
+    endfunction
+
+    function Bit#(8) getDataSel(Addr a);
+        return zeroExtend(getLineDataOffset(a));
+    endfunction
+
+    method ActionValue#(Bool) findLine(LLChild child, Addr a, Line line) if(inited);
+        let r <- wmmFindLine(zeroExtend(child), getIndex(a), getTag(a), pack(line));
+        return r == 1;
+    endmethod
+
+    method ActionValue#(Bool) findData(LLChild child, Addr a, Data data) if(inited);
+        let r <- wmmFindData(zeroExtend(child), getIndex(a), getTag(a), getDataSel(a), data);
+        return r == 1;
+    endmethod
+
+    method ActionValue#(Line) readMemLine(Addr a) if(inited);
+        let line <- wmmReadMemLine(getIndex(a), getTag(a));
+        return unpack(line);
+    endmethod
+
+    method ActionValue#(Data) readMemData(Addr a);
+        let data <- wmmReadMemData(getIndex(a), getTag(a), getDataSel(a));
+        return data;
+    endmethod
+
+    method Action writeMemLine(Addr a, Line line);
+        wmmWriteMemLine(getIndex(a), getTag(a), pack(line));
+    endmethod
+
+    method Action writeMemData(Addr a, Data data);
+        wmmWriteMemData(getIndex(a), getTag(a), getDataSel(a), data);
+    endmethod
+
+    method Action clearAddr(LLChild child, Addr a);
+        wmmClearAddr(zeroExtend(child), getIndex(a), getTag(a));
+    endmethod
+
+    method Action reconcile(LLChild child);
+        wmmReconcile(zeroExtend(child));
+    endmethod
+
+    method Action pushStale(LLChild child, Addr a);
+        wmmPushStale(zeroExtend(child), getIndex(a), getTag(a));
+    endmethod
+endmodule
 
 (* synthesize *)
 module mkTbL1LL(Empty);
     // Reference
-    AtomicMem#(LgTestMemSzBytes) refMem <- mkAtomicMem;
-    Reg#(Vector#(L1DNum, Vector#(L1BankNum, Maybe#(LineAddr)))) refLink <- mkReg(replicate(replicate(Invalid)));
+    RefMem refMem <- mkRefMem;
+    //Reg#(Vector#(L1DNum, Vector#(L1BankNum, Maybe#(LineAddr)))) refLink <- mkReg(replicate(replicate(Invalid)));
 
     // randomize req
     // D$
@@ -524,9 +611,8 @@ module mkTbL1LL(Empty);
         (* fire_when_enabled *)
         rule doICDone;
             // get signal when I$ req is done
-            // only keep the id, ignore the cache line for now
-            let r <- ifcIC[i].done.get;
-            recvICDone[i].wset(truncate(r.id));
+            let id <- ifcIC[i].done.get;
+            recvICDone[i].wset(truncate(id));
         endrule
     end
 

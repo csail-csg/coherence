@@ -211,12 +211,19 @@ endinterface
 typedef 0 ScSuccVal;
 typedef 1 ScFailVal;
 
+`ifdef DEBUG_ICACHE
+typedef struct {
+    Bit#(64) id;
+    Line line;
+} DebugICacheResp deriving(Bits, Eq, FShow);
+`endif
+
 // I$ req/resp
 interface InstServer#(numeric type supSz);
     interface Put#(Addr) req;
     interface Get#(Vector#(supSz, Maybe#(Instruction))) resp;
 `ifdef DEBUG_ICACHE
-    interface Get#(Bit#(64)) done; // the id of the I$ req that truly performs
+    interface Get#(DebugICacheResp) done; // the id and cache line of the I$ req that truly performs
 `endif
 endinterface
 
@@ -391,7 +398,7 @@ typedef union tagged {
     childT Waiting;
 } SelfInvDirPend#(type childT) deriving(Bits, Eq, FShow);
 
-function SelfInvDirPend#(type childT) getSelfInvDirPendInitVal;
+function SelfInvDirPend#(childT) getSelfInvDirPendInitVal;
     return Invalid;
 endfunction
 

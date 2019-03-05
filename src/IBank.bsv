@@ -150,7 +150,7 @@ module mkIBank#(
     Reg#(Bit#(64)) cRqId <- mkReg(0);
     // FIFO to signal the id of cRq that is performed
     // FIFO has 0 cycle latency to match L1 D$ resp latency
-    Fifo#(1, Bit#(64)) cRqDoneQ <- mkBypassFifo; 
+    Fifo#(1, DebugICacheResp) cRqDoneQ <- mkBypassFifo; 
 `endif
 
     // security flush
@@ -437,7 +437,11 @@ module mkIBank#(
             fshow(succ), " ; ", fshow(instResult)
         );
 `ifdef DEBUG_ICACHE
-        cRqDoneQ.enq(req.id); // signal that this req is performed
+        // signal that this req is performed
+        cRqDoneQ.enq(DebugICacheResp {
+            id: req.id,
+            line: ram.line
+        });
 `endif
     endaction
     endfunction

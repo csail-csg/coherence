@@ -295,8 +295,6 @@ module mkSelfInvL1Bank#(
         doAssert(state == WaitNewTag,
             "send replacement resp to parent, state should be WaitNewTag" 
         );
-        doAssert((slot.cs == M) == isValid(data), "M should contain data");
-        doAssert(slot.cs >= E, "downgrade only from E or M");
         // send resp to parent
         cRsToPT resp = CRsMsg {
             addr: {slot.repTag, truncate(req.addr)}, // get bank id & index from req

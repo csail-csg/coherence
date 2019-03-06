@@ -169,6 +169,7 @@ import "BDPI" function Action wmmClearAddr(Bit#(8) core, Bit#(32) index, Bit#(32
 import "BDPI" function Action wmmReconcile(Bit#(8) core);
 import "BDPI" function Action wmmPushStaleByCore(Bit#(8) core, Bit#(32) index, Bit#(32) tag);
 import "BDPI" function Action wmmPushStaleByDma(Bit#(32) index, Bit#(32) tag);
+import "BDPI" function Action wmmFinish();
 
 interface RefMem;
     method ActionValue#(Bool) findLine(LLChild child, Addr a, Line line);
@@ -181,6 +182,7 @@ interface RefMem;
     method Action reconcile(LLChild child);
     method Action pushStaleByCore(LLChild child, Addr a);
     method Action pushStaleByDma(Addr a);
+    method Action finish;
 endinterface
 
 module mkRefMem(RefMem) provisos(
@@ -249,6 +251,10 @@ module mkRefMem(RefMem) provisos(
 
     method Action pushStaleByDma(Addr a) if(inited);
         wmmPushStaleByDma(getIndex(a), getTag(a));
+    endmethod
+
+    method Action finish if(inited);
+        wmmFinish;
     endmethod
 endmodule
 
@@ -1251,6 +1257,7 @@ module mkTbL1LL(Empty);
                 );
             end
         end
+        refMem.finish;
         $finish;
     endrule
 endmodule

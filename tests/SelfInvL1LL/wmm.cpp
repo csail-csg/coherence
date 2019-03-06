@@ -2,6 +2,7 @@
 #include <queue>
 #include <string.h>
 #include <stdint.h>
+#include <stdio.h>
 
 // 64B line data
 class Line {
@@ -180,16 +181,27 @@ private:
 };
 
 static WMMSys *wmm = NULL;
+static FILE *fp = NULL;
 
 extern "C" void wmmInit(unsigned char core_num,
                         unsigned int index_num,
                         unsigned int tag_num) {
+    fp = fopen("wmm.log", "w");
+    fprintf(fp, "init: core %d index %d tag %d\n",
+            int(core_num), index_num, tag_num);
+    fflush(fp);
     wmm = new WMMSys(core_num, index_num, tag_num);
 }
 
 extern "C" unsigned char wmmFindLine(unsigned char core, unsigned int index,
                                      unsigned int tag, unsigned int *line) {
-    return wmm->find_line(core, index, tag, line) ? 1 : 0;
+    fprintf(fp, "find line: core %d, index %d, tag %d",
+            int(core), index, tag);
+    fflush(fp);
+    unsigned char found = wmm->find_line(core, index, tag, line) ? 1 : 0;
+    fprintf(fp, ", found %d\n", int(found));
+    fflush(fp);
+    return found;
 }
 
 extern "C" unsigned char wmmFindData(unsigned char core,
@@ -197,24 +209,40 @@ extern "C" unsigned char wmmFindData(unsigned char core,
                                      unsigned int tag,
                                      unsigned char sel,
                                      unsigned long long data) {
-    return wmm->find_data(core, index, tag, sel, data) ? 1 : 0;
+    fprintf(fp, "find data: core %d, index %d, tag %d, sel %d, data %016x",
+            int(core), index, tag, sel, data);
+    fflush(fp);
+    unsigned char found = wmm->find_data(core, index, tag, sel, data) ? 1 : 0;
+    fprintf(fp, ", found %d\n", int(found));
+    fflush(fp);
+    return found;
 }
 
 extern "C" void wmmReadMemLine(unsigned int *line,
                                unsigned int index,
                                unsigned int tag) {
+    fprintf(fp, "read line: index %d, tag %d\n", index, tag);
+    fflush(fp);
     wmm->read_mem_line(line, index, tag);
 }
 
 extern "C" unsigned long long wmmReadMemData(unsigned int index,
                                              unsigned int tag,
                                              unsigned char sel) {
-    return wmm->read_mem_data(index, tag, sel);
+    fprintf(fp, "read data: index %d, tag %d, sel %d",
+            index, tag, sel);
+    fflush(fp);
+    uint64_t data = wmm->read_mem_data(index, tag, sel);
+    fprintf(fp, ", data %016llx\n", (long long unsigned)data);
+    fflush(fp);
+    return data;
 }
 
 extern "C" void wmmWriteMemLine(unsigned int index,
                                 unsigned int tag,
                                 unsigned int *line) {
+    fprintf(fp, "write line: index %d, tag %d\n", index, tag);
+    fflush(fp);
     wmm->write_mem_line(index, tag, line);
 }
 
@@ -222,27 +250,46 @@ extern "C" void wmmWriteMemData(unsigned int index,
                                 unsigned int tag,
                                 unsigned char sel,
                                 unsigned long long data) {
+    fprintf(fp, "write data: index %d, tag %d, sel %d, data %016llx\n",
+            index, tag, sel, data);
+    fflush(fp);
     wmm->write_mem_data(index, tag, sel, data);
 }
 
 extern "C" void wmmClearAddr(unsigned char core,
                              unsigned int index,
                              unsigned int tag) {
+    fprintf(fp, "clear addr: core %d, index %d, tag %d\n",
+            int(core), index, tag);
+    fflush(fp);
     wmm->clear_addr(core, index, tag);
 }
 
 extern "C" void wmmReconcile(unsigned char core) {
+    fprintf(fp, "reconcile: core %d\n", int(core));
+    fflush(fp);
     wmm->reconcile(core);
 }
 
 extern "C" void wmmPushStaleByCore(unsigned char core,
                                    unsigned int index,
                                    unsigned int tag) {
+    fprintf(fp, "stale by core: core %d, index %d, tag %d\n",
+            int(core), index, tag);
+    fflush(fp);
     wmm->push_stale(core, index, tag);
 }
 
-extern "C" void wmmPushStaleByDma(unsigned char core,
-                                  unsigned int index,
+extern "C" void wmmPushStaleByDma(unsigned int index,
                                   unsigned int tag) {
+    fprintf(fp, "stale by dma: index %d, tag %d\n", index, tag);
+    fflush(fp);
     wmm->push_stale(index, tag);
+}
+
+extern "C" void wmmFinish() {
+    if (!fp) fclose(fp);
+    if (!wmm) delete wmm;
+    fp = NULL;
+    wmm = NULL;
 }

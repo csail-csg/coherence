@@ -209,7 +209,7 @@ extern "C" unsigned char wmmFindData(unsigned char core,
                                      unsigned int tag,
                                      unsigned char sel,
                                      unsigned long long data) {
-    fprintf(fp, "find data: core %d, index %d, tag %d, sel %d, data %016x",
+    fprintf(fp, "find data: core %d, index %d, tag %d, sel %d, data %016llx",
             int(core), index, tag, sel, data);
     fflush(fp);
     unsigned char found = wmm->find_data(core, index, tag, sel, data) ? 1 : 0;

@@ -464,10 +464,12 @@ module mkSelfInvIBank#(
     rule startReconcile(needReconcile && !waitReconcileDone && cRqMshrEmpty);
         pipeline.reconcile;
         waitReconcileDone <= True;
+        $display("%t I %m startReconcile", $time);
     endrule
     rule completeReconcile(needReconcile && waitReconcileDone && pipeline.reconcile_done);
         needReconcile <= False;
         waitReconcileDone <= False;
+        $display("%t I %m completeReconcile", $time);
     endrule
 
     interface ChildCacheToParent to_parent;

@@ -154,6 +154,13 @@ function Bool getDmaReqStall(ReqStall x);
 `endif
 endfunction
 
+// random execute reconcile fence (1/16)
+typedef Bit#(4) RandReconcile;
+
+function Bool getReconcile(RandReconcile x);
+    return x == 0;
+endfunction
+
 // test FSM
 typedef enum {InitTable, InitAddr, Idle, Process, Done} TestFSM deriving(Bits, Eq, FShow);
 
@@ -268,6 +275,7 @@ module mkTbL1LL(Empty);
     // D$
     Vector#(L1DNum, Randomize#(ReqStall)) randDCReqStall <- replicateM(mkGenericRandomizer);
     Vector#(L1DNum, Randomize#(MemTestOp)) randDCOp <- replicateM(mkConstrainedRandomizer(Ld, Amo));
+    Vector#(L1DNum, Randomize#(RandReconcile)) randDCReconcile <- replicateM(mkGenericRandomizer);
     Vector#(L1DNum, Randomize#(LLCTag)) randDCTag <- replicateM(mkConstrainedRandomizer(0, fromInteger(valueOf(TagNum) - 1)));
     Vector#(L1DNum, Randomize#(LLCIndex)) randDCIndex <- replicateM(mkConstrainedRandomizer(0, fromInteger(valueOf(IndexNum) - 1)));
     Vector#(L1DNum, Randomize#(LineDataOffset)) randDCDataSel <- replicateM(mkGenericRandomizer);
@@ -279,6 +287,7 @@ module mkTbL1LL(Empty);
     Vector#(L1DNum, Randomize#(Bool)) randDCDoubleWord <- replicateM(mkGenericRandomizer);
     // I$
     Vector#(L1INum, Randomize#(ReqStall)) randICReqStall <- replicateM(mkGenericRandomizer);
+    Vector#(L1DNum, Randomize#(RandReconcile)) randICReconcile <- replicateM(mkGenericRandomizer);
     Vector#(L1INum, Randomize#(LLCTag)) randICTag <- replicateM(mkConstrainedRandomizer(0, fromInteger(valueOf(TagNum) - 1)));
     Vector#(L1INum, Randomize#(LLCIndex)) randICIndex <- replicateM(mkConstrainedRandomizer(0, fromInteger(valueOf(IndexNum) - 1)));
     Vector#(L1INum, Randomize#(LineInstOffset)) randICInstSel <- replicateM(mkGenericRandomizer);
@@ -292,17 +301,29 @@ module mkTbL1LL(Empty);
 
     // record req
     // D$
+    Vector#(L1DNum, PulseWire) dcReqStall <- replicateM(mkPulseWire);
+    Vector#(L1DNum, PulseWire) dcReqReconcile <- replicateM(mkPulseWire);
     Vector#(L1DNum, RegFile#(TestId, Maybe#(MemTestReq))) dcReqTable <- replicateM(mkRegFileFull);
     Vector#(L1DNum, Reg#(TestCnt)) sendDCCnt <- replicateM(mkReg(0));
     Vector#(L1DNum, RWire#(MemTestReq)) sendDCReq <- replicateM(mkRWire);
+    Vector#(L1DNum, Reg#(Data)) dcStallCnt <- replicateM(mkReg(0));
+    Vector#(L1DNum, Reg#(Data)) dcReconcileCnt <- replicateM(mkReg(0));
+    Vector#(L1DNum, Reg#(Bool)) dcWaitReconcile <- replicateM(mkReg(False));
     // I$
+    Vector#(L1INum, PulseWire) icReqStall <- replicateM(mkPulseWire);
+    Vector#(L1INum, PulseWire) icReqReconcile <- replicateM(mkPulseWire);
     Vector#(L1INum, RegFile#(TestId, Maybe#(Addr))) icReqTable <- replicateM(mkRegFileFull);
     Vector#(L1INum, Reg#(TestCnt)) sendICCnt <- replicateM(mkReg(0));
     Vector#(L1INum, RWire#(Addr)) sendICReq <- replicateM(mkRWire);
+    Vector#(L1INum, Reg#(Data)) icStallCnt <- replicateM(mkReg(0));
+    Vector#(L1INum, Reg#(Data)) icReconcileCnt <- replicateM(mkReg(0));
+    Vector#(L1INum, Reg#(Bool)) icWaitReconcile <- replicateM(mkReg(False));
     // DMA
+    PulseWire dmaReqStall <- mkPulseWire;
     RegFile#(DmaTestId, Maybe#(DmaRq#(DmaTestId))) dmaReqTable <- mkRegFileFull;
     Reg#(DmaTestCnt) sendDmaCnt <- mkReg(0);
     RWire#(DmaRq#(DmaTestId)) sendDmaReq <- mkRWire;
+    Reg#(Data) dmaStallCnt <- mkReg(0);
 
     // print helper for send: print when read this number
     Vector#(L1DNum, Reg#(TestCnt)) sendPrintDCCnt <- replicateM(mkReg(fromInteger(valueOf(TestPrintNum))));
@@ -345,9 +366,11 @@ module mkTbL1LL(Empty);
     // log files
     Vector#(L1DNum, Reg#(File)) dcReqLog <- replicateM(mkReg(InvalidFile));
     Vector#(L1DNum, Reg#(File)) dcRespLog <- replicateM(mkReg(InvalidFile));
+    Vector#(L1DNum, Reg#(File)) dcReconcileLog <- replicateM(mkReg(InvalidFile));
 
     Vector#(L1INum, Reg#(File)) icReqLog <- replicateM(mkReg(InvalidFile));
     Vector#(L1INum, Reg#(File)) icRespLog <- replicateM(mkReg(InvalidFile));
+    Vector#(L1INum, Reg#(File)) icReconcileLog <- replicateM(mkReg(InvalidFile));
 
     Reg#(File) dmaReqLog <- mkReg(InvalidFile);
     Reg#(File) dmaRespLog <- mkReg(InvalidFile);
@@ -401,6 +424,7 @@ module mkTbL1LL(Empty);
 
     // get all ifc used in the reset of the testbench
     Vector#(L1DNum, L1ProcReq#(ProcRqId)) ifcDC = memSys.dReq;
+    Vector#(L1DNum, L1Reconcile) ifcDCReconcile = memSys.dReconcile;
     Vector#(L1INum, InstServer#(L1ISupSz)) ifcIC = ?;
     for(Integer i = 0; i < valueof(L1INum); i = i+1) begin
         ifcIC[i] = (interface InstServer;
@@ -409,6 +433,7 @@ module mkTbL1LL(Empty);
             interface done = memSys.inst[i].done;
         endinterface);
     end
+    Vector#(L1INum, L1Reconcile) ifcICReconcile = memSys.iReconcile;
     DmaServer#(DmaRqId) ifcDma = memSys.dma;
     DelayMemTest dutMem = delayMem.to_test;
 
@@ -467,6 +492,7 @@ module mkTbL1LL(Empty);
                 for(Integer i = 0; i < valueOf(L1DNum); i = i+1) begin
                     randDCReqStall[i].cntrl.init;
                     randDCOp[i].cntrl.init;
+                    randDCReconcile[i].cntrl.init;
                     randDCTag[i].cntrl.init;
                     randDCIndex[i].cntrl.init;
                     randDCDataSel[i].cntrl.init;
@@ -482,9 +508,13 @@ module mkTbL1LL(Empty);
                     name = sprintf("resp_dc_%d.log", i);
                     f <- $fopen(name, "w");
                     dcRespLog[i] <= f;
+                    name = sprintf("reconcile_dc_%d.log", i);
+                    f <- $fopen(name, "w");
+                    dcReconcileLog[i] <= f;
                 end
                 for(Integer i = 0; i < valueOf(L1INum); i = i+1) begin
                     randICReqStall[i].cntrl.init;
+                    randICReconcile[i].cntrl.init;
                     randICTag[i].cntrl.init;
                     randICIndex[i].cntrl.init;
                     randICInstSel[i].cntrl.init;
@@ -494,6 +524,9 @@ module mkTbL1LL(Empty);
                     name = sprintf("resp_ic_%d.log", i);
                     f <- $fopen(name, "w");
                     icRespLog[i] <= f;
+                    name = sprintf("reconcile_ic_%d.log", i);
+                    f <- $fopen(name, "w");
+                    icReconcileLog[i] <= f;
                 end
                 // init randomizers and files for DMA
                 randDmaReqStall.cntrl.init;
@@ -534,7 +567,40 @@ module mkTbL1LL(Empty);
     endrule
 
     for(Integer i = 0; i < valueOf(L1DNum); i = i+1) begin
-        rule doDCReq(testFSM == Process && sendDCCnt[i] < fromInteger(valueOf(TestNum)));
+        (* fire_when_enabled *)
+        rule getRandDCReqStall;
+            let r <- randDCReqStall[i].next;
+            if(getReqStall(r)) begin
+                dcReqStall[i].send;
+            end
+        endrule
+
+        (* fire_when_enabled *)
+        rule getRandDCReconcile;
+            let r <- randDCReconcile[i].next;
+            if(getReconcile(r)) begin
+                dcReqReconcile[i].send;
+            end
+        endrule
+
+        Bool canDCReq = (testFSM == Process && !dcWaitReconcile[i] &&
+                         sendDCCnt[i] < fromInteger(valueOf(TestNum)));
+
+        rule doDCReqStall(canDCReq && dcReqStall[i]);
+            // stall
+            dcStallCnt[i] <= dcStallCnt[i] + 1;
+        endrule
+
+        rule doDCReqReconcile(canDCReq && !dcReqStall[i] && dcReqReconcile[i]);
+            // reconcile
+            ifcDCReconcile[i].reconcile;
+            dcWaitReconcile[i] <= True;
+            dcReconcileCnt[i] <= dcReconcileCnt[i] + 1;
+            $fwrite(dcReconcileLog[i], "time %t: send reconcile\n", $time);
+        endrule
+
+        rule doDCReq(canDCReq && !dcReqStall[i] && !dcReqReconcile[i]);
+            // no stall or fence, send req & record
             // randomize req
             let index <- randDCIndex[i].next;
             let tag <- randDCTag[i].next;
@@ -564,53 +630,79 @@ module mkTbL1LL(Empty);
                     rl: False
                 }
             };
-            // randomize stall
-            let rStall <- randDCReqStall[i].next;
-            if(!getReqStall(rStall)) begin
-                // no stall, send req & record
-                ifcDC[i].req(ProcRq {
-                    id: zeroExtend(req.id),
-                    addr: req.addr,
-                    toState: getToState(req.op),
-                    op: getMemOp(req.op),
-                    byteEn: req.byteEn,
-                    data: req.data,
-                    amoInst: req.amoInst
-                });
-                sendDCReq[i].wset(req);
-
-                // output req cnt
-                if((sendDCCnt[i] + 1) == sendPrintDCCnt[i]) begin
-                    $fdisplay(stderr, "INFO: %t D$ %d send req %d/%d",
-                        $time, i, sendDCCnt[i] + 1, valueOf(TestNum)
-                    );
-                    sendPrintDCCnt[i] <= sendPrintDCCnt[i] + fromInteger(valueOf(TestPrintNum));
-                end
+            ifcDC[i].req(ProcRq {
+                id: zeroExtend(req.id),
+                addr: req.addr,
+                toState: getToState(req.op),
+                op: getMemOp(req.op),
+                byteEn: req.byteEn,
+                data: req.data,
+                amoInst: req.amoInst
+            });
+            sendDCReq[i].wset(req);
+            // output req cnt
+            if((sendDCCnt[i] + 1) == sendPrintDCCnt[i]) begin
+                $fdisplay(stderr, "INFO: %t D$ %d send req %d/%d",
+                    $time, i, sendDCCnt[i] + 1, valueOf(TestNum)
+                );
+                sendPrintDCCnt[i] <= sendPrintDCCnt[i] + fromInteger(valueOf(TestPrintNum));
             end
+        endrule
+
+        rule doDCReconcile(dcWaitReconcile[i] && ifcDCReconcile[i].reconcile_done);
+            dcWaitReconcile[i] <= False;
+            $fwrite(dcReconcileLog[i], "time %t: reconcile done\n", $time);
         endrule
     end
 
     for(Integer i = 0; i < valueOf(L1INum); i = i+1) begin
-        rule doICReq(testFSM == Process && sendICCnt[i] < fromInteger(valueOf(TestNum)));
+        (* fire_when_enabled *)
+        rule getRandICReqStall;
+            let r <- randICReqStall[i].next;
+            if(getReqStall(r)) begin
+                icReqStall[i].send;
+            end
+        endrule
+
+        (* fire_when_enabled *)
+        rule getRandICReconcile;
+            let r <- randICReconcile[i].next;
+            if(getReconcile(r)) begin
+                icReqReconcile[i].send;
+            end
+        endrule
+
+        Bool canICReq = (testFSM == Process && !icWaitReconcile[i] &&
+                         sendICCnt[i] < fromInteger(valueOf(TestNum)));
+
+        rule doICReqStall(canICReq && icReqStall[i]);
+            // stall
+            icStallCnt[i] <= icStallCnt[i] + 1;
+        endrule
+
+        rule doICReqReconcile(canICReq && !icReqStall[i] && icReqReconcile[i]);
+            // reconcile
+            ifcICReconcile[i].reconcile;
+            icWaitReconcile[i] <= True;
+            icReconcileCnt[i] <= icReconcileCnt[i] + 1;
+            $fwrite(icReconcileLog[i], "time %t: send reconcile\n", $time);
+        endrule
+
+        rule doICReq(canICReq && !icReqStall[i] && !icReqReconcile[i]);
+            // no stall or fence, send req & record
             // randomize req
             let index <- randICIndex[i].next;
             let tag <- randICTag[i].next;
             let sel <- randICInstSel[i].next;
             let addr = getInstAddr(tag, index, sel);
-            // randomize stall
-            let rStall <- randICReqStall[i].next;
-            if(!getReqStall(rStall)) begin
-                // no stall, send req & record
-                ifcIC[i].req.put(addr);
-                sendICReq[i].wset(addr);
-
-                // output req cnt
-                if((sendICCnt[i] + 1) == sendPrintICCnt[i]) begin
-                    $fdisplay(stderr, "INFO: %t I$ %d send req %d/%d",
-                        $time, i, sendICCnt[i] + 1, valueOf(TestNum)
-                    );
-                    sendPrintICCnt[i] <= sendPrintICCnt[i] + fromInteger(valueOf(TestPrintNum));
-                end
+            ifcIC[i].req.put(addr);
+            sendICReq[i].wset(addr);
+            // output req cnt
+            if((sendICCnt[i] + 1) == sendPrintICCnt[i]) begin
+                $fdisplay(stderr, "INFO: %t I$ %d send req %d/%d",
+                    $time, i, sendICCnt[i] + 1, valueOf(TestNum)
+                );
+                sendPrintICCnt[i] <= sendPrintICCnt[i] + fromInteger(valueOf(TestPrintNum));
             end
         endrule
 
@@ -626,27 +718,42 @@ module mkTbL1LL(Empty);
             let r <- ifcIC[i].done.get;
             recvICDone[i].wset(r);
         endrule
+
+        rule doICReconcile(icWaitReconcile[i] && ifcICReconcile[i].reconcile_done);
+            icWaitReconcile[i] <= False;
+            $fwrite(icReconcileLog[i], "time %t: reconcile done\n", $time);
+        endrule
     end
 
+    (* fire_when_enabled *)
+    rule getRandDmaReqStall;
+        let r <- randDmaReqStall.next;
+        if(getDmaReqStall(r)) begin
+            dmaReqStall.send;
+        end
+    endrule
+
     rule doDmaReq(testFSM == Process && sendDmaCnt < fromInteger(valueOf(DmaTestNum)));
-        // randomize req
-        let index <- randDmaIndex.next;
-        let tag <- randDmaTag.next;
-        let addr = getAddr(tag, index, 0);
-        Bool write <- randDmaWrite.next;
-        let data <- randDmaData.next;
-        let rBE <- randDmaBE.next;
-        LineByteEn be = unpack(rBE);
-        DmaRq#(DmaTestId) req = DmaRq {
-            addr: addr,
-            byteEn: write ? be : replicate(False),
-            data: unpack(data),
-            id: truncate(sendDmaCnt)
-        };
-        // randomize stall
-        let rStall <- randDmaReqStall.next;
-        if(!getDmaReqStall(rStall)) begin
+        if(dmaReqStall) begin
+            // stall
+            dmaStallCnt <= dmaStallCnt + 1;
+        end
+        else begin
             // no stall, send req & record
+            // randomize req
+            let index <- randDmaIndex.next;
+            let tag <- randDmaTag.next;
+            let addr = getAddr(tag, index, 0);
+            Bool write <- randDmaWrite.next;
+            let data <- randDmaData.next;
+            let rBE <- randDmaBE.next;
+            LineByteEn be = unpack(rBE);
+            DmaRq#(DmaTestId) req = DmaRq {
+                addr: addr,
+                byteEn: write ? be : replicate(False),
+                data: unpack(data),
+                id: truncate(sendDmaCnt)
+            };
             ifcDma.memReq.enq(DmaRq {
                 addr: req.addr,
                 byteEn: req.byteEn,
@@ -1257,6 +1364,13 @@ module mkTbL1LL(Empty);
                 );
             end
         end
+        for(Integer i = 0; i < valueof(L1DNum); i = i+1) begin
+            $fdisplay(stderr, "STATS: D$ %d: stall %d, reconcile %d", i, dcStallCnt[i], dcReconcileCnt[i]);
+        end
+        for(Integer i = 0; i < valueof(L1INum); i = i+1) begin
+            $fdisplay(stderr, "STATS: I$ %d: stall %d, reconcile %d", i, icStallCnt[i], icReconcileCnt[i]);
+        end
+        $fdisplay(stderr, "STATS: DMA: stall %d", dmaStallCnt);
         refMem.finish;
         $finish;
     endrule

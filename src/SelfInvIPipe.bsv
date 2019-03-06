@@ -405,8 +405,11 @@ module mkSelfInvIPipe(
         endaction
         endfunction
         joinActions(map(flush, infoArray));
+        // reconcile is done
+        needReconcile <= False;
         // conflict with deq
         conflict_reconcile_deq.wset(?);
+        $display("%t I %m doReconcile", $time);
     endrule
 
     // stall enq for reconcile

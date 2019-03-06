@@ -781,10 +781,12 @@ module mkSelfInvL1Bank#(
     rule startReconcile(needReconcile && !waitReconcileDone && cRqMshrEmpty);
         pipeline.reconcile;
         waitReconcileDone <= True;
+        $display("%t L1 %m startReconcile", $time);
     endrule
     rule completeReconcile(needReconcile && waitReconcileDone && pipeline.reconcile_done);
         needReconcile <= False;
         waitReconcileDone <= False;
+        $display("%t L1 %m completeReconcile", $time);
     endrule
 
     interface ChildCacheToParent to_parent;

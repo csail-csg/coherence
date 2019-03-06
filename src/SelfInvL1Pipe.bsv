@@ -427,8 +427,11 @@ module mkSelfInvL1Pipe(
         endaction
         endfunction
         joinActions(map(flush, infoArray));
+        // reconcile is done
+        needReconcile <= False;
         // conflict with deq
         conflict_reconcile_deq.wset(?);
+        $display("%t L1 %m doReconcile", $time);
     endrule
 
     // stall enq for reconcile

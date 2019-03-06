@@ -48,6 +48,12 @@ import Performance::*;
 import LatencyTimer::*;
 import RandomReplace::*;
 
+export SelfInvL1CRqStuck(..);
+export SelfInvL1PRqStuck(..);
+export SelfInvL1Bank(..);
+export mkSelfInvL1Bank;
+export mkSelfInvL1Cache;
+
 // although pRq never appears in dependency chain
 // we still need pRq MSHR to limit the number of pRq
 // and thus limit the size of rsToPIndexQ
@@ -133,7 +139,7 @@ module mkSelfInvL1Bank#(
     Alias#(pRsFromPT, PRsMsg#(wayT, void)),
     Alias#(pRqRsFromPT, PRqRsMsg#(wayT, void)),
     Alias#(cRqSlotT, L1CRqSlot#(wayT, tagT)), // cRq MSHR slot
-    Alias#(l1CmdT, L1Cmd#(cRqIdxT, pRqIdxT)),
+    Alias#(l1CmdT, SelfInvL1Cmd#(cRqIdxT, pRqIdxT)),
     Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, void, cacheOwnerT, otherT, RandRepInfo, Line, l1CmdT)),
     // requirements
     Bits#(procRqIdT, _procRqIdT),
@@ -149,7 +155,7 @@ module mkSelfInvL1Bank#(
 
     L1PRqMshr#(pRqNum) pRqMshr <- mkL1PRqMshrLocal;
 
-    SelfInvL1Pipe#(lgBankNum, wayNum, maxHitNum, indexT, tagT, cRqIdxT, pRqIdxT) pipeline <- mkSelfInvL1Pipeline;
+    SelfInvL1Pipe#(lgBankNum, wayNum, maxHitNum, indexT, tagT, cRqIdxT, pRqIdxT) pipeline <- mkL1Pipeline;
 
     Fifo#(1, procRqT) rqFromCQ <- mkBypassFifo;
 
@@ -234,7 +240,7 @@ module mkSelfInvL1Bank#(
         procRqT r <- toGet(rqFromCQ).get;
         cRqIdxT n <- cRqMshr.getEmptyEntryInit(r);
         // send to pipeline
-        pipeline.send(CRq (L1PipeRqIn {
+        pipeline.send(CRq (SelfInvL1PipeRqIn {
             addr: r.addr, 
             mshrIdx: n
         }));
@@ -253,7 +259,7 @@ module mkSelfInvL1Bank#(
         fromPQ.deq;
         pRqIdxT n <- pRqMshr.getEmptyEntryInit(req);
         // send to pipeline
-        pipeline.send(PRq (L1PipeRqIn {
+        pipeline.send(PRq (SelfInvL1PipeRqIn {
             addr: req.addr,
             mshrIdx: n
         }));
@@ -268,7 +274,7 @@ module mkSelfInvL1Bank#(
     (* descending_urgency = "pRsTransfer, cRqTransfer" *)
     rule pRsTransfer(fromPQ.first matches tagged PRs .resp);
         fromPQ.deq;
-        pipeline.send(PRs (L1PipePRsIn {
+        pipeline.send(PRs (SelfInvL1PipePRsIn {
             addr: resp.addr,
             toState: resp.toState,
             data: resp.data,
@@ -668,7 +674,7 @@ module mkSelfInvL1Bank#(
                     end
                     else (* nosplit *) begin
                         Bool silent_replace = ram.info.cs == S && !tag_match;
-                        $display("%t L1 %m pipelineResp: cRq: "
+                        $display("%t L1 %m pipelineResp: cRq: ",
                                  "no owner, miss no replace, silent replace ",
                                  $time, fshow(silent_replace));
                         cRqMissNoReplacement(silent_replace);
@@ -767,11 +773,17 @@ module mkSelfInvL1Bank#(
     endrule
 
     // Reconcile lines in S state: start after cRq MSHR is empty
-    rule startReconcile(needReconcile && !waitReconcileDone && cRqMshr.emptyForFlush);
+    // Since cRqTransfer rule cannot fire when needReconcile is true, we use a
+    // wire to catch cRqMshr.empty to avoid scheduling cycles
+    PulseWire cRqMshrEmpty <- mkPulseWire;
+    (* fire_when_enabled, no_implicit_conditions *)
+    rule setCRqMshrEmpty(cRqMshr.emptyForFlush);
+        cRqMshrEmpty.send;
+    endrule
+    rule startReconcile(needReconcile && !waitReconcileDone && cRqMshrEmpty);
         pipeline.reconcile;
         waitReconcileDone <= True;
     endrule
-    
     rule completeReconcile(needReconcile && waitReconcileDone && pipeline.reconcile_done);
         needReconcile <= False;
         waitReconcileDone <= False;
@@ -794,9 +806,9 @@ module mkSelfInvL1Bank#(
     endmethod
 
     interface Get cRqStuck;
-        method ActionValue#(L1CRqStuck) get;
+        method ActionValue#(SelfInvL1CRqStuck) get;
             let s <- cRqMshr.stuck.get;
-            return L1CRqStuck {
+            return SelfInvL1CRqStuck {
                 addr: s.req.addr,
                 op: s.req.op,
                 state: s.state,
@@ -946,7 +958,7 @@ module mkSelfInvL1Cache#(
     Alias#(cRqToPT, CRqMsg#(wayT, void)),
     Alias#(cRsToPT, CRsMsg#(void)),
     Alias#(pRqRsFromPT, PRqRsMsg#(wayT, void)),
-    Alias#(l1CmdT, L1Cmd#(indexT, cRqIdxT, pRqIdxT)),
+    Alias#(l1CmdT, SelfInvL1Cmd#(cRqIdxT, pRqIdxT)),
     Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, void, cacheOwnerT, otherT, RandRepInfo, Line, l1CmdT)),
     // requirements
     Bits#(procRqIdT, _procRqIdT),

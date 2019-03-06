@@ -43,16 +43,16 @@ endmodule
 
 (* synthesize *)
 module mkSelfInvLLPipeline(
-    mkSelfInvLLPipe#(LgLLBankNum, LLChildNum, LLWayNum, LLIndex, LLTag, LLCRqMshrIdx)
+    SelfInvLLPipe#(LgLLBankNum, LLChildNum, LLWayNum, LLIndex, LLTag, LLCRqMshrIdx)
 );
-    let m <- mkLLPipe;
+    let m <- mkSelfInvLLPipe;
     return m;
 endmodule
 
 typedef SelfInvLLBank#(LgLLBankNum, LLChildNum, LLWayNum, LLIndexSz, LLTagSz, LLCRqNum, LLCRqId, DmaRqId) SelfInvLLBankWrapper;
 
 (* synthesize *)
-module mkSelfInvLLBankWrapper(LLBankWrapper);
+module mkSelfInvLLBankWrapper(SelfInvLLBankWrapper);
     let m <- mkSelfInvLLBank(mkSelfInvLastLvCRqMshr, mkSelfInvLLPipeline);
     return m;
 endmodule

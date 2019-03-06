@@ -25,11 +25,20 @@ import Assert::*;
 import ConfigReg::*;
 import Vector::*;
 import FShow::*;
+import Fifo::*;
 import Types::*;
 import CCTypes::*;
 import CCPipe::*;
 import RWBramCore::*;
 import RandomReplace::*;
+
+export SelfInvL1PipeRqIn(..);
+export SelfInvL1PipePRsIn(..);
+export SelfInvL1PipeIn(..);
+export SelfInvL1Cmd(..);
+export SelfInvL1Hits(..);
+export SelfInvL1Pipe(..);
+export mkSelfInvL1Pipe;
 
 // type param ordering: bank < way < index < tag < cRq < pRq
 
@@ -154,7 +163,7 @@ module mkCacheStateArray(CacheStateArray#(indexT)) provisos(
             end
         endaction
         endfunction
-        joinActions(map(resetS, states));
+        joinActions(map(resetS, state));
     endmethod
 endmodule
 
@@ -165,7 +174,7 @@ typedef struct {
     otherT other;
 } TagOwnerOther#(type tagT, type ownerT, type otherT) deriving(Bits, Eq, FShow);
 
-interface CacheInfoArray(type indexT, type tagT, type ownerT, type otherT);
+interface CacheInfoArray#(type indexT, type tagT, type ownerT, type otherT);
     interface RWBramCore#(indexT, CacheInfo#(tagT, Msi, void, ownerT, otherT)) ram;
     method Action reconcile;
 endinterface
@@ -184,7 +193,7 @@ module mkCacheInfoArray(CacheInfoArray#(indexT, tagT, ownerT, otherT)) provisos(
 
     interface RWBramCore ram;
         method Action wrReq(indexT idx, infoT x);
-            tagOwnerOtherRam.wrReq(idx, TagOwner {
+            tagOwnerOtherRam.wrReq(idx, TagOwnerOther {
                 tag: x.tag,
                 owner: x.owner,
                 other: x.other
@@ -207,7 +216,7 @@ module mkCacheInfoArray(CacheInfoArray#(indexT, tagT, ownerT, otherT)) provisos(
             };
         endmethod
         method Bool rdRespValid;
-            return tagOwnerOtherRam.rdRespvalid && csArray.ram.rdRespValid;
+            return tagOwnerOtherRam.rdRespValid && csArray.ram.rdRespValid;
         endmethod
         method Action deqRdResp;
             tagOwnerOtherRam.deqRdResp;
@@ -371,7 +380,7 @@ module mkSelfInvL1Pipe(
     endactionvalue
     endfunction
 
-    function ActionValue#(UpdateByDownDir#(Msi, dirT) updateByDownDir(
+    function ActionValue#(UpdateByDownDir#(Msi, dirT)) updateByDownDir(
         pipeCmdT cmd, Msi toState, Bool dataV, Msi oldCs, dirT oldDir
     );
     actionvalue
@@ -398,12 +407,21 @@ module mkSelfInvL1Pipe(
     // pipeline enq while we are waiting. Make the reconcile rule conflict with
     // pipeline deq to remove any possible race (the guard of reconcile rule
     // actually should have done the job). 
+    // Since send method will not fire when needReconcile, we can use a wire to
+    // catch pipeline empty signal to avoid scheduling issue
     Reg#(Bool) needReconcile <- mkReg(False);
 
     RWire#(void) conflict_reconcile_deq <- mkRWire;
+
+    PulseWire pipeEmpty <- mkPulseWire;
+
+    (* fire_when_enabled, no_implicit_conditions *)
+    rule setPipeEmpty(pipe.emptyForFlush);
+        pipeEmpty.send;
+    endrule
     
-    rule doReconcile(initDone && needReconcile && pipe.emptyForFlush);
-        function Action flush(CacheInfoArray#(indexT, tagT, ownerT) ifc);
+    rule doReconcile(initDone && needReconcile && pipeEmpty);
+        function Action flush(CacheInfoArray#(indexT, tagT, ownerT, otherT) ifc);
         action
             ifc.reconcile;
         endaction

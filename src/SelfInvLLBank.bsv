@@ -64,7 +64,11 @@ import RandomReplace::*;
 
 // naming rule: child req type names < dma type names
 
-interface LLBank#(
+export SelfInvLLBank(..);
+export SelfInvLLCRqStuck(..);
+export mkSelfInvLLBank;
+
+interface SelfInvLLBank#(
     numeric type lgBankNum,
     numeric type childNum,
     numeric type wayNum,
@@ -78,7 +82,7 @@ interface LLBank#(
     interface DmaServer#(dmaRqIdT) dma;
     interface MemFifoClient#(LdMemRqId#(Bit#(TLog#(cRqNum))), void) to_mem;
     // detect deadlock: only in use when macro CHECK_DEADLOCK is defined
-    interface Get#(LLCRqStuck#(childNum, cRqIdT, dmaRqIdT)) cRqStuck;
+    interface Get#(SelfInvLLCRqStuck#(childNum, cRqIdT, dmaRqIdT)) cRqStuck;
     // performance
     method Action setPerfStatus(Bool stats);
     method Data getPerfData(LLCPerfType t);
@@ -93,27 +97,7 @@ typedef struct {
     LLCRqState state;
     Bool waitP;
     SelfInvDirPend#(Bit#(TLog#(childNum))) dirPend;
-} LLCRqStuck#(numeric type childNum, type cRqIdT, type dmaRqIdT) deriving(Bits, Eq, FShow);
-
-// unified child req & dma req
-typedef union tagged {
-    cRqIdT Child;
-    dmaRqIdT Dma;
-} LLRqId#(type cRqIdT, type dmaRqIdT) deriving(Bits, Eq, FShow);
-
-typedef struct {
-    // common addr
-    Addr addr;
-    // child req stuff
-    Msi fromState;
-    Msi toState;
-    Bool canUpToE;
-    childT child;
-    // dma req stuff
-    LineByteEn byteEn;
-    // req id: distinguish between child and dma
-    LLRqId#(cRqIdT, dmaRqIdT) id;
-} LLRq#(type cRqIdT, type dmaRqIdT, type childT) deriving(Bits, Eq, FShow);
+} SelfInvLLCRqStuck#(numeric type childNum, type cRqIdT, type dmaRqIdT) deriving(Bits, Eq, FShow);
 
 typedef struct {
     cRqIdT cRqId;
@@ -139,7 +123,7 @@ module mkSelfInvLLBank#(
     module#(LLCRqMshr#(cRqNum, wayT, tagT, SelfInvDirPend#(Bit#(TLog#(childNum))), cRqT)) mkLLMshr,
     module#(SelfInvLLPipe#(lgBankNum, childNum, wayNum, indexT, tagT, cRqIndexT)) mkLLPipeline
 )(
-    LLBank#(lgBankNum, childNum, wayNum, indexSz, tagSz, cRqNum, cRqIdT, dmaRqIdT)
+    SelfInvLLBank#(lgBankNum, childNum, wayNum, indexSz, tagSz, cRqNum, cRqIdT, dmaRqIdT)
 ) provisos(
     Alias#(childT, Bit#(TLog#(childNum))),
     Alias#(wayT, Bit#(TLog#(wayNum))),
@@ -162,7 +146,7 @@ module mkSelfInvLLBank#(
     Alias#(toMemInfoT, ToMemInfo#(cRqIndexT)),
     Alias#(cRqT, LLRq#(cRqIdT, dmaRqIdT, childT)),
     Alias#(cRqSlotT, LLCRqSlot#(wayT, tagT, dirPendT)), // cRq MSHR slot
-    Alias#(llCmdT, LLCmd#(childT, cRqIndexT)),
+    Alias#(llCmdT, SelfInvLLCmd#(childT, cRqIndexT)),
     Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, dirT, cacheOwnerT, void, RandRepInfo, Line, llCmdT)),
     // requirements
     Bits#(cRqIdT, _cRqIdSz),
@@ -176,7 +160,7 @@ module mkSelfInvLLBank#(
 
     LLCRqMshr#(cRqNum, wayT, tagT, dirPendT, cRqT) cRqMshr <- mkLLMshr;
 
-    LLPipe#(lgBankNum, childNum, wayNum, indexT, tagT, cRqIndexT) pipeline <- mkLLPipeline;
+    SelfInvLLPipe#(lgBankNum, childNum, wayNum, indexT, tagT, cRqIndexT) pipeline <- mkLLPipeline;
 
     Fifo#(2, cRqFromCT) rqFromCQ <- mkCFFifo;
     Fifo#(2, cRsFromCT) rsFromCQ <- mkCFFifo;
@@ -298,7 +282,7 @@ module mkSelfInvLLBank#(
         // later cRq to same addr needs to be appended after this one
         // send to pipeline
         cRqT req = cRqMshr.transfer.getRq(n);
-        pipeline.send(CRq (LLPipeCRqIn {
+        pipeline.send(CRq (SelfInvLLPipeCRqIn {
             addr: req.addr,
             mshrIdx: n
         }));
@@ -353,7 +337,7 @@ module mkSelfInvLLBank#(
         // setup new MSHR entry
         cRqIndexT n <- cRqMshr.transfer.getEmptyEntryInit(cRq, Invalid);
         // send to pipeline
-        pipeline.send(CRq (LLPipeCRqIn {
+        pipeline.send(CRq (SelfInvLLPipeCRqIn {
             addr: cRq.addr, 
             mshrIdx: n
         }));
@@ -404,7 +388,7 @@ module mkSelfInvLLBank#(
         // setup new MSHR entry and data
         cRqIndexT n <- cRqMshr.transfer.getEmptyEntryInit(cRq, write ? Valid (r.data) : Invalid);
         // send to pipeline
-        pipeline.send(CRq (LLPipeCRqIn {
+        pipeline.send(CRq (SelfInvLLPipeCRqIn {
             addr: cRq.addr, 
             mshrIdx: n
         }));
@@ -468,7 +452,7 @@ module mkSelfInvLLBank#(
         cRqSlotT cSlot = cRqMshr.transfer.getSlot(n);
         doAssert(isRqFromC(cRq.id), "refill mem resp must be for child req");
         // send to pipeline
-        pipeline.send(MRs (LLPipeMRsIn {
+        pipeline.send(MRs (SelfInvLLPipeMRsIn {
             addr: cRq.addr,
             toState: cRq.toState == M ? M : E, // set upgrade state
             data: respData,
@@ -795,7 +779,7 @@ module mkSelfInvLLBank#(
             toState: toState
         });
         cRqMshr.pipelineResp.setStateSlot(n, Done, ?); // we no longer need slot info
-        cRqMshr.pipelineResp.setData(n, ram.info.dir[cRq.child] == I ? Valid (ram.line) : Invalid);
+        cRqMshr.pipelineResp.setData(n, Valid (ram.line)); // always resp with data
         // update child dir
         dirT newDir = ram.info.dir;
         if(toState >= E) begin
@@ -926,7 +910,7 @@ module mkSelfInvLLBank#(
             info: CacheInfo {
                 tag: getTag(cRq.addr), // set to new tag (old tag is replaced)
                 cs: I,
-                dir: SelfInvDirPend {exChild: ?, state: I},
+                dir: SelfInvDir {exChild: ?, state: I},
                 owner: Valid (CRqOwner {
                     mshrIdx: n, // owner is current cRq
                     replacing: False // replacement is done right now
@@ -1192,7 +1176,7 @@ module mkSelfInvLLBank#(
                     if(ram.info.cs == I || ram.info.tag == getTag(cRq.addr)) begin
                         // No Replacement necessary, check dir (dir is not garbage even when cs is I)
                         dirPendT dirPend = getDirPendNonCompatForChild;
-                        if(ram.info.cs > I && dirPend == replicate(Invalid)) begin
+                        if(ram.info.cs > I && dirPend == Invalid) begin
                             $display("%t LL %m pipelineResp: cRq: no owner, hit", $time);
                             cRqFromCHit(n, cRq);
                         end
@@ -1360,9 +1344,9 @@ module mkSelfInvLLBank#(
     endinterface
 
     interface Get cRqStuck;
-        method ActionValue#(LLCRqStuck#(childNum, cRqIdT, dmaRqIdT)) get;
+        method ActionValue#(SelfInvLLCRqStuck#(childNum, cRqIdT, dmaRqIdT)) get;
             let s <- cRqMshr.stuck.get;
-            return LLCRqStuck {
+            return SelfInvLLCRqStuck {
                 id: s.req.id,
                 addr: s.req.addr,
                 fromState: s.req.fromState,

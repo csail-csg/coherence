@@ -26,19 +26,22 @@ import CacheUtils::*;
 import CCTypes::*;
 import CCSizes::*;
 import SelfInvL1Wrapper::*;
-//import IWrapper::*;
+import SelfInvIWrapper::*;
 import SelfInvLLWrapper::*;
 import CrossBar::*;
 import Vector::*;
 import GetPut::*;
 import ClientServer::*;
 import SelfInvL1Bank::*;
-//import IBank::*;
+import SelfInvIBank::*;
 import SelfInvLLBank::*;
 import Connectable::*;
 
+export L1Reconcile(..);
 export SelfInvL1LL(..);
 export mkSelfInvL1LL;
+export getDChild;
+export getIChild;
 
 // LLChildNum == L1Num
 // XXX no LLC banking: LgLLBankNum = 0
@@ -138,6 +141,9 @@ endmodule
 // 0 ~ L1DNum -1 -- D$ 0~L1DNum-1
 // L1Dnum ~ L1Num -- I$ 0~L1INum-1
 
+function Integer getDChild(Integer i) = fromInteger(i);
+function Integer getIChild(Integer i) = fromInteger(i + valueof(L1DNum));
+
 interface L1Reconcile;
     method Action reconcile;
     method Bool reconcile_done;
@@ -171,14 +177,14 @@ module mkSelfInvL1LL#(Vector#(L1DNum, L1ProcResp#(ProcRqId)) procResp)(SelfInvL1
     let pXBar <- mkLLPRqRsToL1XBar;
 
     for(Integer i = 0; i < valueOf(L1DNum); i = i+1) begin
-        mkConnection(cRqXBar.srcIfc[i], dc[i].to_parent.rqToP);
-        mkConnection(cRsXBar.srcIfc[i], dc[i].to_parent.rsToP);
-        mkConnection(pXBar.dstIfc[i], dc[i].to_parent.fromP);
+        mkConnection(cRqXBar.srcIfc[getDChild(i)], dc[i].to_parent.rqToP);
+        mkConnection(cRsXBar.srcIfc[getDChild(i)], dc[i].to_parent.rsToP);
+        mkConnection(pXBar.dstIfc[getDChild(i)], dc[i].to_parent.fromP);
     end
     for(Integer i = 0; i < valueof(L1INum); i = i+1) begin
-        mkConnection(cRqXBar.srcIfc[i + valueof(L1DNum)], ic[i].to_parent.rqToP);
-        mkConnection(cRsXBar.srcIfc[i + valueof(L1DNum)], ic[i].to_parent.rsToP);
-        mkConnection(pXBar.dstIfc[i + valueof(L1DNum)], ic[i].to_parent.fromP);
+        mkConnection(cRqXBar.srcIfc[getIChild(i)], ic[i].to_parent.rqToP);
+        mkConnection(cRsXBar.srcIfc[getIChild(i)], ic[i].to_parent.rsToP);
+        mkConnection(pXBar.dstIfc[getIChild(i)], ic[i].to_parent.fromP);
     end
 
     for(Integer i = 0; i < valueOf(LLNum); i = i+1) begin

@@ -43,7 +43,7 @@ endmodule
 
 (* synthesize *)
 module mkSelfInvIPipeline(
-    SelfInvL1Pipe#(LgIBankNum, L1WayNum, IIndex, ITag, L1CRqMshrIdx)
+    SelfInvIPipe#(LgIBankNum, L1WayNum, IIndex, ITag, L1CRqMshrIdx)
 );
     let m <- mkSelfInvIPipe;
     return m;

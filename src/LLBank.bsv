@@ -39,6 +39,10 @@ import Cntrs::*;
 import ConfigReg::*;
 import RandomReplace::*;
 
+export LLCRqStuck(..);
+export LLBank(..);
+export mkLLBank;
+
 // we use an infoQ to serialize all req to memory
 // this also ensures that cache pipeline is never blocked
 // so we do not need to buffer mem resp that needs to refill cache
@@ -62,6 +66,8 @@ import RandomReplace::*;
 //     When the mem resp comes, we send DMA resp and DO NOT fill cache
 
 // XXX mem resp that refill cache are for child req, others that don't refill cache are for DMA req
+
+// We do not need an explict bank id, because bank id is included in cRq.addr
 
 // naming rule: child req type names < dma type names
 
@@ -95,26 +101,6 @@ typedef struct {
     Bool waitP;
     Vector#(childNum, DirPend) dirPend;
 } LLCRqStuck#(numeric type childNum, type cRqIdT, type dmaRqIdT) deriving(Bits, Eq, FShow);
-
-// unified child req & dma req
-typedef union tagged {
-    cRqIdT Child;
-    dmaRqIdT Dma;
-} LLRqId#(type cRqIdT, type dmaRqIdT) deriving(Bits, Eq, FShow);
-
-typedef struct {
-    // common addr
-    Addr addr;
-    // child req stuff
-    Msi fromState;
-    Msi toState;
-    Bool canUpToE;
-    childT child;
-    // dma req stuff
-    LineByteEn byteEn;
-    // req id: distinguish between child and dma
-    LLRqId#(cRqIdT, dmaRqIdT) id;
-} LLRq#(type cRqIdT, type dmaRqIdT, type childT) deriving(Bits, Eq, FShow);
 
 typedef struct {
     cRqIdT cRqId;

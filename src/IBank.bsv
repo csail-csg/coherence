@@ -46,18 +46,16 @@ import Performance::*;
 import LatencyTimer::*;
 import RandomReplace::*;
 
+export ICRqStuck(..);
+export IPRqStuck(..);
+export IBank(..);
+export mkIBank;
+
 // L1 I$
 
 // although pRq never appears in dependency chain
 // we still need pRq MSHR to limit the number of pRq
 // and thus limit the size of rsToPIndexQ
-
-typedef struct {
-    Addr addr;
-`ifdef DEBUG_ICACHE
-    Bit#(64) id; // incremening id for each incoming I$ req (0,1,...)
-`endif
-} ProcRqToI deriving(Bits, Eq, FShow);
 
 typedef struct {
     Addr addr;

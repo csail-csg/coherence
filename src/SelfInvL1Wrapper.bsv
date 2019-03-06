@@ -51,13 +51,13 @@ endmodule
 
 (* synthesize *)
 module mkSelfInvL1Pipeline(
-    SelfInvL1Pipe#(LgL1BankNum, L1WayNum, L1Index, L1Tag, L1CRqMshrIdx, L1PRqMshrIdx)
+    SelfInvL1Pipe#(LgL1BankNum, L1WayNum, L1DMaxHitNum, L1Index, L1Tag, L1CRqMshrIdx, L1PRqMshrIdx)
 );
-    let m <- mkL1Pipe;
+    let m <- mkSelfInvL1Pipe;
     return m;
 endmodule
 
-typedef SelfInvL1Bank#(LgL1BankNum, L1WayNum, L1IndexSz, L1TagSz, L1CRqNum, L1PRqNum, L1MaxHitNum, ProcRqId) SelfInvL1CacheWrapper;
+typedef SelfInvL1Bank#(LgL1BankNum, L1WayNum, L1IndexSz, L1TagSz, L1CRqNum, L1PRqNum, L1DMaxHitNum, ProcRqId) SelfInvL1CacheWrapper;
 
 module mkSelfInvL1CacheWrapper#(L1ProcResp#(ProcRqId) procResp)(SelfInvL1CacheWrapper);
     let m <- mkSelfInvL1Cache(mkSelfInvL1CRqMshrWrapper, mkSelfInvL1PRqMshrWrapper, mkSelfInvL1Pipeline, procResp);

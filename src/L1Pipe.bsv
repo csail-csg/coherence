@@ -29,6 +29,15 @@ import CCPipe::*;
 import RWBramCore::*;
 import RandomReplace::*;
 
+export L1PipeRqIn(..);
+export L1PipePRsIn(..);
+export L1PipeFlushIn(..);
+export L1PipeIn(..);
+export L1FlushCmd(..);
+export L1Cmd(..);
+export L1Pipe(..);
+export mkL1Pipe;
+
 // type param ordering: bank < way < index < tag < cRq < pRq
 
 // in L1 cache, only cRq can occupy cache line (pRq handled immediately)

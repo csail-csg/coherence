@@ -29,6 +29,13 @@ import CCPipe::*;
 import RWBramCore::*;
 import RandomReplace::*;
 
+export LLPipeCRqIn(..);
+export LLPipeMRsIn(..);
+export LLPipeIn(..);
+export LLCmd(..);
+export LLPipe(..);
+export mkLLPipe;
+
 // type param ordering: bank < child < way < index < tag < cRq
 
 // input types

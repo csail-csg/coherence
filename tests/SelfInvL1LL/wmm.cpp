@@ -1,4 +1,5 @@
 #include <vector>
+#include <queue>
 #include <string.h>
 #include <stdint.h>
 
@@ -19,6 +20,7 @@ public:
     }
     Line& operator=(const Line &x) {
         memcpy(data, x.data, byte_num);
+        return *this;
     }
     
     inline bool equal(const void *p) {
@@ -42,12 +44,12 @@ public:
     InvBuffer(uint32_t index_n, uint32_t tag_n) :
         index_num(index_n),
         tag_num(tag_n),
-        ib(index_num, std::vector<std::queue<Line>>(tag_num))
+        ib(index_num, std::vector<std::queue<Line> >(tag_num))
     {
     }
 
-    inline void push_stale(uint32_t index, uint32_t tag, const void *line) {
-        ib[index][tag].push(Line(line));
+    inline void push_stale(uint32_t index, uint32_t tag, const Line &line) {
+        ib[index][tag].push(line);
     }
 
     // return true if the line is found in ib
@@ -76,13 +78,14 @@ public:
     }
 
     inline void clear_addr(uint32_t index, uint32_t tag) {
-        ib[index][tag].clear();
+        std::queue<Line> &q = ib[index][tag];
+        while (!q.empty()) q.pop();
     }
 
     inline void reconcile() {
         for (uint32_t index = 0; index < index_num; index++) {
             for (uint32_t tag = 0; tag < tag_num; tag++) {
-                ib[index][tag].clear();
+                clear_addr(index, tag);
             }
         }
     }
@@ -93,7 +96,7 @@ private:
 
     // ib[index][tag] is FIFO of stale cache-line values. FIFO front is most
     // stale.
-    std::vector<std::vector<std::queue<Line>>> ib;
+    std::vector<std::vector<std::queue<Line> > > ib;
 };
 
 class WMMSys {
@@ -109,7 +112,7 @@ public:
 
     inline bool find_line(uint8_t core, uint32_t index, uint32_t tag,
                           const void *line) {
-        if (ib[core].read_line(index, tag, line)) {
+        if (ib[core].find_line(index, tag, line)) {
             return true;
         }
         return mem[index][tag].equal(line);
@@ -117,7 +120,7 @@ public:
 
     inline bool find_data(uint8_t core, uint32_t index, uint32_t tag,
                           uint8_t sel, uint64_t data) {
-        if (ib[core].read_data(index, tag, sel, data)) {
+        if (ib[core].find_data(index, tag, sel, data)) {
             return true;
         }
         return mem[index][tag].data[sel] == data;
@@ -149,7 +152,7 @@ public:
         ib[core].reconcile();
     }
     
-    // value is modified by core, push stale values to all others
+    // value is modified by core, push stale values to all other cores
     inline void push_stale(uint8_t core, uint32_t index, uint32_t tag) {
         Line &line = mem[index][tag];
         for (uint8_t i = 0; i < core_num; i++) {
@@ -159,13 +162,21 @@ public:
         }
     }
 
+    // value is modified by DMA, push stale values to all cores
+    inline void push_stale(uint32_t index, uint32_t tag) {
+        Line &line = mem[index][tag];
+        for (uint8_t i = 0; i < core_num; i++) {
+            ib[i].push_stale(index, tag, line);
+        }
+    }
+
 private:
     const uint8_t core_num;
     const uint32_t index_num;
     const uint32_t tag_num;
 
     std::vector<InvBuffer> ib;
-    std::vector<std::vector<Line>> mem;
+    std::vector<std::vector<Line> > mem;
 };
 
 static WMMSys *wmm = NULL;
@@ -224,8 +235,14 @@ extern "C" void wmmReconcile(unsigned char core) {
     wmm->reconcile(core);
 }
 
-extern "C" void wmmPushStale(unsigned char core,
-                             unsigned int index,
-                             unsigned int tag) {
+extern "C" void wmmPushStaleByCore(unsigned char core,
+                                   unsigned int index,
+                                   unsigned int tag) {
     wmm->push_stale(core, index, tag);
+}
+
+extern "C" void wmmPushStaleByDma(unsigned char core,
+                                  unsigned int index,
+                                  unsigned int tag) {
+    wmm->push_stale(index, tag);
 }

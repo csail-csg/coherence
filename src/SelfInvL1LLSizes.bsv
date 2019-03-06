@@ -44,8 +44,8 @@ typedef Bit#(L1IndexSz) L1Index;
 typedef GetTagSz#(LgL1BankNum, LgL1SetNum) L1TagSz;
 typedef Bit#(L1TagSz) L1Tag;
 
-typedef 4 LgL1MaxHitNum; // max hit is just for D$
-typedef TExp#(LgL1DMaxHitNum) L1MaxHitNum;
+typedef 4 LgL1DMaxHitNum; // max hit is just for D$
+typedef TExp#(LgL1DMaxHitNum) L1DMaxHitNum;
 
 typedef 0 LgIBankNum;
 typedef 7 LgISetNum;

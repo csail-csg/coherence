@@ -45,41 +45,34 @@ import Performance::*;
 import LatencyTimer::*;
 import RandomReplace::*;
 
-// L1 I$
+export SelfInvICRqStuck(..);
+export SelfInvIPRqStuck(..);
+export SelfInvIBank(..);
+export mkSelfInvIBank;
 
-// although pRq never appears in dependency chain
-// we still need pRq MSHR to limit the number of pRq
-// and thus limit the size of rsToPIndexQ
-
-typedef struct {
-    Addr addr;
-`ifdef DEBUG_ICACHE
-    Bit#(64) id; // incremening id for each incoming I$ req (0,1,...)
-`endif
-} ProcRqToI deriving(Bits, Eq, FShow);
+// L1 I$, no pRq
 
 typedef struct {
     Addr addr;
     ICRqState state;
     Bool waitP;
-} ICRqStuck deriving(Bits, Eq, FShow);
+} SelfInvICRqStuck deriving(Bits, Eq, FShow);
 
-typedef IPRqMshrStuck IPRqStuck;
+typedef void SelfInvIPRqStuck; // not used
 
-interface IBank#(
+interface SelfInvIBank#(
     numeric type supSz, // superscalar size
     numeric type lgBankNum,
     numeric type wayNum,
     numeric type indexSz,
     numeric type tagSz,
-    numeric type cRqNum,
-    numeric type pRqNum
+    numeric type cRqNum
 );
     interface ChildCacheToParent#(Bit#(TLog#(wayNum)), void) to_parent;
     interface InstServer#(supSz) to_proc; // to child, i.e. processor
     // detect deadlock: only in use when macro CHECK_DEADLOCK is defined
-    interface Get#(ICRqStuck) cRqStuck;
-    interface Get#(IPRqStuck) pRqStuck;
+    interface Get#(SelfInvICRqStuck) cRqStuck;
+    interface Get#(SelfInvIPRqStuck) pRqStuck;
     // security: flush (not implemented)
     method Action flush;
     method Bool flush_done;
@@ -91,12 +84,12 @@ interface IBank#(
     method Data getPerfData(L1IPerfType t);
 endinterface
 
-module mkIBank#(
+module mkSelfInvIBank#(
     Bit#(lgBankNum) bankId,
     module#(ICRqMshr#(cRqNum, wayT, tagT, procRqT, resultT)) mkICRqMshrLocal,
     module#(SelfInvIPipe#(lgBankNum, wayNum, indexT, tagT, cRqIdxT)) mkIPipeline
 )(
-    IBank#(supSz, lgBankNum, wayNum, indexSz, tagSz, cRqNum)
+    SelfInvIBank#(supSz, lgBankNum, wayNum, indexSz, tagSz, cRqNum)
 ) provisos(
     Alias#(wayT, Bit#(TLog#(wayNum))),
     Alias#(indexT, Bit#(indexSz)),
@@ -114,8 +107,8 @@ module mkIBank#(
     Alias#(pRsFromPT, PRsMsg#(wayT, void)),
     Alias#(pRqRsFromPT, PRqRsMsg#(wayT, void)),
     Alias#(cRqSlotT, ICRqSlot#(wayT, tagT)), // cRq MSHR slot
-    Alias#(l1CmdT, L1Cmd#(indexT, cRqIdxT, pRqIdxT)),
-    Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, void, cacheOwnerT, otherT, RandRepInfo, Line, l1CmdT)),
+    Alias#(iCmdT, SelfInvICmd#(cRqIdxT)),
+    Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, void, cacheOwnerT, otherT, RandRepInfo, Line, iCmdT)),
     Alias#(resultT, Vector#(supSz, Maybe#(Instruction))),
     // requirements
     FShow#(pipeOutT),
@@ -148,7 +141,7 @@ module mkIBank#(
     Reg#(Bit#(64)) cRqId <- mkReg(0);
     // FIFO to signal the id of cRq that is performed
     // FIFO has 0 cycle latency to match L1 D$ resp latency
-    Fifo#(1, Bit#(64)) cRqDoneQ <- mkBypassFifo; 
+    Fifo#(1, DebugICacheResp) cRqDoneQ <- mkBypassFifo; 
 `endif
 
 `ifdef PERF_COUNT
@@ -194,7 +187,7 @@ module mkIBank#(
 `endif
         cRqIdxT n <- cRqMshr.getEmptyEntryInit(r);
         // send to pipeline
-        pipeline.send(CRq (L1PipeRqIn {
+        pipeline.send(CRq (SelfInvIPipeRqIn {
             addr: r.addr,
             mshrIdx: n
         }));
@@ -223,7 +216,7 @@ module mkIBank#(
     (* descending_urgency = "pRsTransfer, cRqTransfer" *)
     rule pRsTransfer(fromPQ.first matches tagged PRs .resp);
         fromPQ.deq;
-        pipeline.send(PRs (L1PipePRsIn {
+        pipeline.send(PRs (SelfInvIPipePRsIn {
             addr: resp.addr,
             toState: S,
             data: resp.data,
@@ -333,7 +326,11 @@ module mkIBank#(
             fshow(succ), " ; ", fshow(instResult)
         );
 `ifdef DEBUG_ICACHE
-        cRqDoneQ.enq(req.id); // signal that this req is performed
+        // signal that this req is performed
+        cRqDoneQ.enq(DebugICacheResp {
+            id: req.id,
+            line: ram.line
+        });
 `endif
     endaction
     endfunction
@@ -457,11 +454,17 @@ module mkIBank#(
     endrule
 
     // Reconcile lines in S state: start after cRq MSHR is empty
-    rule startReconcile(needReconcile && !waitReconcileDone && cRqMshr.emptyForFlush);
+    // Since cRqTransfer rule cannot fire when needReconcile is true, we use a
+    // wire to catch cRqMshr.empty to avoid scheduling cycles
+    PulseWire cRqMshrEmpty <- mkPulseWire;
+    (* fire_when_enabled, no_implicit_conditions *)
+    rule setCRqMshrEmpty(cRqMshr.emptyForFlush);
+        cRqMshrEmpty.send;
+    endrule
+    rule startReconcile(needReconcile && !waitReconcileDone && cRqMshrEmpty);
         pipeline.reconcile;
         waitReconcileDone <= True;
     endrule
-    
     rule completeReconcile(needReconcile && waitReconcileDone && pipeline.reconcile_done);
         needReconcile <= False;
         waitReconcileDone <= False;
@@ -498,9 +501,9 @@ module mkIBank#(
     endinterface
 
     interface Get cRqStuck;
-        method ActionValue#(ICRqStuck) get;
+        method ActionValue#(SelfInvICRqStuck) get;
             let s <- cRqMshr.stuck.get;
-            return ICRqStuck {
+            return SelfInvICRqStuck {
                 addr: s.req.addr,
                 state: s.state,
                 waitP: s.waitP
@@ -508,7 +511,7 @@ module mkIBank#(
         endmethod
     endinterface
                 
-    interface pRqStuck = pRqMshr.stuck;
+    interface pRqStuck = nullGet;
 
 `ifdef SECURITY
     method Action flush if(flushDone);

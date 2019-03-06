@@ -158,7 +158,7 @@ module mkSelfInvLLPipe(
             infoRam[i].wrReq(initIndex, CacheInfo {
                 tag: 0,
                 cs: I,
-                dir: SelfInvDirPend {exChild: ?, state: I},
+                dir: SelfInvDir {exChild: ?, state: I},
                 owner: Invalid,
                 other: ?
             });
@@ -270,9 +270,9 @@ module mkSelfInvLLPipe(
         // update dir
         // The exclusive child is downgraded. Since we don't track S, just make
         // dir invalid, child field is useless for I
-        dirT newDir = SelfInvLLDir {exChild: ?, state: I};
+        dirT newDir = SelfInvDir {exChild: ?, state: I};
         doAssert(oldDir.state >= E && toState <= S, "no more exclusive child");
-        doAssert(cmd matches tagged CRs .cRs &&& oldDir.exChild == cRs.child,
+        doAssert(cmd matches tagged CRs .cRs &&& oldDir.exChild == cRs.child ? True : False,
                  "cRs child should match");
         if(!dataV) begin
             doAssert(oldDir.state < M, "cRs without data, dir must < M");

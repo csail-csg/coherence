@@ -21,48 +21,26 @@
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-EXTPATH = -p +:../include:../../src:../../../procs/lib
-CFILES = wmm.cpp
+#make
+#if [ $? -ne 0 ]; then
+#    exit $?
+#fi
 
-TARGETS = L1LL
-
-MACROS = -D CCSIZES_FILE=\"SelfInvL1LLSizes.bsv\" -D DEBUG_DMA -D DEBUG_ICACHE \
-		 -D NO_REQ_STALL -D NO_DMA_REQ_STALL \
-		 -D BSIM
-
-LINK_JOBS ?= 8
-
-$(TARGETS): %:
-	mkdir -p build$@Dir
-	bsc -u -sim \
-		-bdir build$@Dir \
-		-info-dir build$@Dir \
-		-simdir build$@Dir \
-		-vdir build$@Dir \
-		+RTS -K500M -RTS \
-		-steps-warn-interval 1000000 \
-		-show-schedule \
-		-aggressive-conditions \
-		-check-assert \
-		$(MACROS) \
-		$(EXTPATH) Tb$@.bsv
-	grep -n "Blocking rules" build$@Dir/mkTb$@.sched | sed '/(none)/d'
-	bsc -sim -e mkTb$@ \
-		-bdir build$@Dir \
-		-info-dir build$@Dir \
-		-simdir build$@Dir \
-		+RTS -K500M -RTS \
-		-Xc -std=c99 \
-		-Xc++ -D_GLIBCXX_USE_CXX11_ABI=0 \
-		-parallel-sim-link $(LINK_JOBS) \
-		-o sim$@ build$@Dir/*.ba $(CFILES)
-
-
-all: $(TARGETS)
-
-
-clean:
-	rm -rf build*Dir sim* log *.log ../include/*.o
-
-.PHONY: clean all $(TARGETS)
-.DEFAULT_GOAL := all
+./simL1LL > log
+grep "L1 .* tagMatch" log > L1TagMatch.log
+grep "L1 .* cRqTransfer" log > L1CRqTransfer.log
+grep "L1 .* pRqTransfer" log > L1PRqTransfer.log
+grep "L1 .* pRsTransfer" log > L1PRsTransfer.log
+grep "L1 .* sendRqToP" log > L1SendRqToP.log
+grep "L1 .* pipelineResp" log > L1PipelineResp.log
+grep "LL .* tagMatch" log > LLTagMatch.log
+grep "LL .* cRqTransfer" log > LLCRqTransfer.log
+grep "LL .* cRsTransfer" log > LLCRsTransfer.log
+grep "LL .* mRsTransfer" log > LLMRsTransfer.log
+grep "LL .* sendToM" log > LLSendToM.log
+grep "LL .* sendRsToDma" log > LLSendRsToDma.log
+grep "LL .* sendRsToC" log > LLSendRsToC.log
+grep "LL .* sendRqToC" log > LLSendRqToC.log
+grep "LL .* pipelineResp" log > LLPipelineResp.log
+grep "XBAR:" log > XBar.log
+tail log

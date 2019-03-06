@@ -167,7 +167,8 @@ import "BDPI" function Action wmmWriteMemLine(Bit#(32) index, Bit#(32) tag, Bit#
 import "BDPI" function Action wmmWriteMemData(Bit#(32) index, Bit#(32) tag, Bit#(8) sel, Bit#(64) data);
 import "BDPI" function Action wmmClearAddr(Bit#(8) core, Bit#(32) index, Bit#(32) tag);
 import "BDPI" function Action wmmReconcile(Bit#(8) core);
-import "BDPI" function Action wmmPushStale(Bit#(8) core, Bit#(32) index, Bit#(32) tag);
+import "BDPI" function Action wmmPushStaleByCore(Bit#(8) core, Bit#(32) index, Bit#(32) tag);
+import "BDPI" function Action wmmPushStaleByDma(Bit#(32) index, Bit#(32) tag);
 
 interface RefMem;
     method ActionValue#(Bool) findLine(LLChild child, Addr a, Line line);
@@ -178,7 +179,8 @@ interface RefMem;
     method Action writeMemData(Addr a, Data data);
     method Action clearAddr(LLChild child, Addr a);
     method Action reconcile(LLChild child);
-    method Action pushStale(LLChild child, Addr a);
+    method Action pushStaleByCore(LLChild child, Addr a);
+    method Action pushStaleByDma(Addr a);
 endinterface
 
 module mkRefMem(RefMem) provisos(
@@ -192,7 +194,7 @@ module mkRefMem(RefMem) provisos(
     endrule
 
     function Bit#(32) getIndex(Addr a);
-        LLCIndex idx = truncate(a >> valueof(LgLineSzBytes);
+        LLCIndex idx = truncate(a >> valueof(LgLineSzBytes));
         return zeroExtend(idx);
     endfunction
 
@@ -220,29 +222,33 @@ module mkRefMem(RefMem) provisos(
         return unpack(line);
     endmethod
 
-    method ActionValue#(Data) readMemData(Addr a);
+    method ActionValue#(Data) readMemData(Addr a) if(inited);
         let data <- wmmReadMemData(getIndex(a), getTag(a), getDataSel(a));
         return data;
     endmethod
 
-    method Action writeMemLine(Addr a, Line line);
+    method Action writeMemLine(Addr a, Line line) if(inited);
         wmmWriteMemLine(getIndex(a), getTag(a), pack(line));
     endmethod
 
-    method Action writeMemData(Addr a, Data data);
+    method Action writeMemData(Addr a, Data data) if(inited);
         wmmWriteMemData(getIndex(a), getTag(a), getDataSel(a), data);
     endmethod
 
-    method Action clearAddr(LLChild child, Addr a);
+    method Action clearAddr(LLChild child, Addr a) if(inited);
         wmmClearAddr(zeroExtend(child), getIndex(a), getTag(a));
     endmethod
 
-    method Action reconcile(LLChild child);
+    method Action reconcile(LLChild child) if(inited);
         wmmReconcile(zeroExtend(child));
     endmethod
 
-    method Action pushStale(LLChild child, Addr a);
-        wmmPushStale(zeroExtend(child), getIndex(a), getTag(a));
+    method Action pushStaleByCore(LLChild child, Addr a) if(inited);
+        wmmPushStaleByCore(zeroExtend(child), getIndex(a), getTag(a));
+    endmethod
+
+    method Action pushStaleByDma(Addr a) if(inited);
+        wmmPushStaleByDma(getIndex(a), getTag(a));
     endmethod
 endmodule
 
@@ -260,9 +266,9 @@ module mkTbL1LL(Empty);
     Vector#(L1DNum, Randomize#(LLCIndex)) randDCIndex <- replicateM(mkConstrainedRandomizer(0, fromInteger(valueOf(IndexNum) - 1)));
     Vector#(L1DNum, Randomize#(LineDataOffset)) randDCDataSel <- replicateM(mkGenericRandomizer);
     Vector#(L1DNum, Randomize#(Data)) randDCData <- replicateM(mkGenericRandomizer);
-    Vector#(L1DNum, Randomize#(Bit#(DataSzBytes))) randDCDataBE <- replicateM(mkConstrainedRandomizer(1, maxBound)); // it could be all 0 though..
+    Vector#(L1DNum, Randomize#(Bit#(DataSzBytes))) randDCDataBE <- replicateM(mkConstrainedRandomizer(1, maxBound));
     Vector#(L1DNum, Randomize#(Line)) randDCLine <- replicateM(mkGenericRandomizer);
-    Vector#(L1DNum, Randomize#(Bit#(LineSzBytes))) randDCLineBE <- replicateM(mkConstrainedRandomizer(1, maxBound)); // it could be all 0 though..
+    Vector#(L1DNum, Randomize#(Bit#(LineSzBytes))) randDCLineBE <- replicateM(mkConstrainedRandomizer(1, maxBound));
     Vector#(L1DNum, Randomize#(AmoFunc)) randDCAmoFunc <- replicateM(mkConstrainedRandomizer(Swap, Maxu));
     Vector#(L1DNum, Randomize#(Bool)) randDCDoubleWord <- replicateM(mkGenericRandomizer);
     // I$
@@ -315,7 +321,7 @@ module mkTbL1LL(Empty);
 
     // resp for I$ req really taking effects
     Vector#(L1INum, RegFile#(TestId, Maybe#(L1InstResult))) icRefTable <- replicateM(mkRegFileFull);
-    Vector#(L1INum, RWire#(TestId)) recvICDone <- replicateM(mkRWire);
+    Vector#(L1INum, RWire#(DebugICacheResp)) recvICDone <- replicateM(mkRWire);
 
     // resp for DMA req really taking effects
     RegFile#(DmaTestId, Bool) dmaRefWrMissTable <- mkRegFileFull;
@@ -377,7 +383,7 @@ module mkTbL1LL(Empty);
             endmethod
         endinterface);
     endfunction
-    let memSys <- mkL1LL(map(getL1ProcResp, genVector));
+    let memSys <- mkSelfInvL1LL(map(getL1ProcResp, genVector));
     IdealDelayMem#(MemDelay, LgTestMemSzBytes, LdMemRqId#(LLCRqMshrIdx), void) delayMem <- mkIdealDelayMem;
     mkConnection(memSys.to_mem, delayMem.to_proc);
 
@@ -446,7 +452,7 @@ module mkTbL1LL(Empty);
         Addr addr = getAddr(iterTag, iterIndex, 0);
         Line initV = replicate(addr);
         dutMem.initLine(addr, initV);
-        refMem.writeLine(addr, initV);
+        refMem.writeMemLine(addr, initV);
         if(iterIndex == fromInteger(valueOf(IndexNum) - 1)) begin
             iterIndex <= 0;
             if(iterTag == fromInteger(valueOf(TagNum) - 1)) begin
@@ -611,8 +617,8 @@ module mkTbL1LL(Empty);
         (* fire_when_enabled *)
         rule doICDone;
             // get signal when I$ req is done
-            let id <- ifcIC[i].done.get;
-            recvICDone[i].wset(truncate(id));
+            let r <- ifcIC[i].done.get;
+            recvICDone[i].wset(r);
         endrule
     end
 
@@ -653,7 +659,7 @@ module mkTbL1LL(Empty);
         end
     endrule
 
-    // it's fine to delay DMA resp deq
+    // DMA resp has been delayed after its taking-effect time in LLBank
     rule doDmaLdResp(testFSM == Process && recvDmaCnt < fromInteger(valueOf(DmaTestNum)));
         let rs <- toGet(ifcDma.respLd).get;
         recvDmaResp.wset(DmaRs {
@@ -698,7 +704,7 @@ module mkTbL1LL(Empty);
 
     (* fire_when_enabled *)
     rule doConProcess(testFSM == Process);
-        // changes to make on refLink
+        // changes to make on refLink (not really in use..)
         Vector#(L1DNum, Maybe#(LineAddr)) wrAddr = replicate(Invalid); // for clear others' links
         Vector#(L1DNum, Maybe#(LineAddr)) lrAddr = replicate(Invalid); // for clear own link
         Vector#(L1DNum, Maybe#(L1BankId)) scBank = replicate(Invalid); // for clear own link
@@ -749,17 +755,15 @@ module mkTbL1LL(Empty);
                 // check resp val and apply actions to ref mem
                 if(req.op == Ld) begin
                     // load: check value
-                    let refData <- refMem.readData(req.addr);
                     let dutData = resp.data;
+                    let found <- refMem.findData(fromInteger(getDChild(i)), req.addr, dutData);
                     $fwrite(dcRespLog[i], "time %t: resp %x Ld\n", $time, resp.id,
-                        "ref data %x\n", refData,
-                        "dut data %x\n\n", dutData
-                    );
-                    if(refData == dutData) begin
+                            "dut data %x\n", dutData, "ref found ", fshow(found), "\n\n");
+                    if(found) begin
                         // good
                     end
                     else begin
-                        $fwrite(stderr, "[TbL1LL] ERROR: D$ %d wrong Ld resp %x\n", i, resp.id);
+                        $fwrite(stderr, "[TbL1LL] ERROR: D$ %d fail to find Ld resp %x\n", i, resp.id);
                         $finish;
                     end
                     // stats
@@ -767,9 +771,11 @@ module mkTbL1LL(Empty);
                 end
                 else if(req.op == St) begin
                     // store: apply to ref mem
-                    Line line <- refMem.readLine(req.addr);
+                    refMem.pushStaleByCore(fromInteger(getDChild(i)), req.addr);
+                    refMem.clearAddr(fromInteger(getDChild(i)), req.addr);
+                    Line line <- refMem.readMemLine(req.addr);
                     Line newLine = getUpdatedLine(line, req.lineBE, req.line);
-                    refMem.writeLine(req.addr, newLine);
+                    refMem.writeMemLine(req.addr, newLine);
                     // set addr for clearing others' link
                     wrAddr[i] = Valid (lineAddr);
                     $fwrite(dcRespLog[i], "time %t: resp %x St\n\n", $time, resp.id);
@@ -778,11 +784,12 @@ module mkTbL1LL(Empty);
                 end
                 else if(req.op == Lr) begin
                     // load reserve: check value
-                    let refData <- refMem.readData(req.addr);
                     let dutData = resp.data;
+                    refMem.clearAddr(fromInteger(getDChild(i)), req.addr);
+                    let refData <- refMem.readMemData(req.addr);
                     $fwrite(dcRespLog[i], "time %t: resp %x Lr\n", $time, resp.id,
-                        "ref data %x\n", refData,
-                        "dut data %x\n\n", dutData
+                        "dut data %x\n", dutData,
+                        "ref data %x\n\n", refData
                     );
                     if(refData == dutData) begin
                         // good
@@ -802,25 +809,26 @@ module mkTbL1LL(Empty);
                     //Data refData = refSucc ? fromInteger(valueof(ScSuccVal)) : fromInteger(valueof(ScFailVal));
                     let dutData = resp.data;
                     // FIXME TODO I cannot make BSV compiles with linkAddr estimation, so assume LR/SC is correctly implemented
-                    let refData = dutData;
                     $fwrite(dcRespLog[i], "time %t: resp %x Sc\n", $time, resp.id,
-                        "ref data %x\n", refData,
                         "dut data %x\n\n", dutData
+                        //"ref data %x\n", refData
                     );
-                    if(refData == dutData || dutData == fromInteger(valueof(ScFailVal))) begin
-                        // good: it is fine for dut to have failed Sc
-                    end
-                    else begin
-                        $fwrite(stderr, "[TbL1LL] ERROR: D$ %d wrong Sc resp %x\n", i, resp.id);
-                        $finish;
-                    end
+                    //if(refData == dutData || dutData == fromInteger(valueof(ScFailVal))) begin
+                    //    // good: it is fine for dut to have failed Sc
+                    //end
+                    //else begin
+                    //    $fwrite(stderr, "[TbL1LL] ERROR: D$ %d wrong Sc resp %x\n", i, resp.id);
+                    //    $finish;
+                    //end
                     // update mem & link addr
                     scBank[i] = Valid (bankId); // record sc bank for clearing own link
                     if(dutData == fromInteger(valueof(ScSuccVal))) begin
                         // write mem
-                        Data data <- refMem.readData(req.addr);
+                        refMem.pushStaleByCore(fromInteger(getDChild(i)), req.addr);
+                        refMem.clearAddr(fromInteger(getDChild(i)), req.addr);
+                        Data data <- refMem.readMemData(req.addr);
                         Data newData = getUpdatedData(data, req.byteEn, req.data);
-                        refMem.writeData(req.addr, newData);
+                        refMem.writeMemData(req.addr, newData);
                         // record write addr for clear other link
                         wrAddr[i] = Valid (lineAddr);
                     end
@@ -837,13 +845,15 @@ module mkTbL1LL(Empty);
                     // AMO: check value
                     Data dutData = resp.data;
                     Bool upper32 = req.addr[2] == 1;
-                    Data data <- refMem.readData(req.addr);
+                    refMem.pushStaleByCore(fromInteger(getDChild(i)), req.addr);
+                    refMem.clearAddr(fromInteger(getDChild(i)), req.addr);
+                    Data data <- refMem.readMemData(req.addr);
                     Data refData = req.amoInst.doubleWord ? data : signExtend(
                         upper32 ? data[63:32] : data[31:0]
                     );
                     $fwrite(dcRespLog[i], "time %t: resp %x Amo\n", $time, resp.id,
-                        "ref data %x\n", refData,
-                        "dut data %x\n\n", dutData
+                        "dut data %x\n", dutData,
+                        "ref data %x\n\n", refData
                     );
                     if(refData == dutData) begin
                         // good
@@ -854,7 +864,7 @@ module mkTbL1LL(Empty);
                     end
                     // update mem
                     Data newData = amoExec(req.amoInst, data, req.data, upper32);
-                    refMem.writeData(req.addr, newData);
+                    refMem.writeMemData(req.addr, newData);
                     // record write addr for clear other link
                     wrAddr[i] = Valid (lineAddr);
                     // stats
@@ -889,7 +899,8 @@ module mkTbL1LL(Empty);
                 $fwrite(icReqLog[i], "time %t: ", $time, fshow(id), " ; ", fshow(req), "\n\n");
             end
             // apply I$ req done (always comes at least 1 cycle earlier than real resp)
-            if(recvICDone[i].wget matches tagged Valid .id) begin
+            if(recvICDone[i].wget matches tagged Valid .resp) begin
+                TestId id = truncate(resp.id);
                 if(!isValid(icRefTable[i].sub(id))) begin
                     // get req addr
                     let r = icReqTable[i].sub(id);
@@ -902,8 +913,7 @@ module mkTbL1LL(Empty);
                     end
                     Addr addr = validValue(r);
                     // get reference inst result
-                    Line line <- refMem.readLine(addr);
-                    Vector#(LineSzInst, Instruction) instVec = unpack(pack(line));
+                    Vector#(LineSzInst, Instruction) instVec = unpack(pack(resp.line));
                     LineInstOffset baseSel = getLineInstOffset(addr);
                     Bool stop = False;
                     L1InstResult res = replicate(Invalid);
@@ -914,9 +924,13 @@ module mkTbL1LL(Empty);
                             stop = sel == maxBound;
                         end
                     end
+                    // find in ref mem
+                    let found <- refMem.findLine(fromInteger(getIChild(i)), addr, resp.line);
                     // record inst result
                     icRefTable[i].upd(id, Valid (res));
-                    $fwrite(icRespLog[i], "time %t: done %x result ", $time, id, fshow(res), "\n\n");
+                    $fwrite(icRespLog[i], "time %t: done %x \n", $time, id,
+                            "dut line ", fshow(resp.line), ", result ", fshow(res), "\n",
+                            "ref found ", fshow(found), "\n\n");
                 end
                 else begin
                     $fdisplay(stderr, "[TbL1LL] ERROR: I$ %d done %x duplicate", i, id);
@@ -931,8 +945,8 @@ module mkTbL1LL(Empty);
                 // get reference result
                 let r = icRefTable[i].sub(id);
                 $fwrite(icRespLog[i], "time %t: resp %x\n", $time, id,
-                    "ref inst ", fshow(r), "\n",
-                    "dut inst ", fshow(dutResp), "\n\n"
+                    "dut inst ", fshow(dutResp), "\n",
+                    "done inst ", fshow(r), "\n\n"
                 );
                 if(isValid(r)) begin
                     // good
@@ -941,9 +955,9 @@ module mkTbL1LL(Empty);
                     $fdisplay(stderr, "[TbL1LL] ERROR: I$ %d resp %x haven't done yet", i, id);
                     $finish;
                 end
-                let refResp = validValue(r);
+                let doneResp = validValue(r);
                 // check value
-                if(refResp == dutResp) begin
+                if(doneResp == dutResp) begin
                     // good
                 end
                 else begin
@@ -987,9 +1001,10 @@ module mkTbL1LL(Empty);
                 end
                 let req = validValue(r);
                 // update ref mem
-                Line line <- refMem.readLine(req.addr);
+                refMem.pushStaleByDma(req.addr);
+                Line line <- refMem.readMemLine(req.addr);
                 Line newLine = getUpdatedLine(line, req.byteEn, req.data);
-                refMem.writeLine(req.addr, newLine);
+                refMem.writeMemLine(req.addr, newLine);
                 // record write addr for clear all link
                 dmaWrAddr[0] = Valid (getLineAddr(req.addr));
                 // record write miss
@@ -1014,9 +1029,10 @@ module mkTbL1LL(Empty);
                 end
                 let req = validValue(r);
                 // update ref mem
-                Line line <- refMem.readLine(req.addr);
+                refMem.pushStaleByDma(req.addr);
+                Line line <- refMem.readMemLine(req.addr);
                 Line newLine = getUpdatedLine(line, req.byteEn, req.data);
-                refMem.writeLine(req.addr, newLine);
+                refMem.writeMemLine(req.addr, newLine);
                 // record write addr for clear all link
                 dmaWrAddr[1] = Valid (getLineAddr(req.addr));
                 // record write hit
@@ -1039,7 +1055,7 @@ module mkTbL1LL(Empty);
                     $finish;
                 end
                 let req = validValue(r);
-                Line line <- refMem.readLine(req.addr);
+                Line line <- refMem.readMemLine(req.addr);
                 dmaRefRdMissTable.upd(dmaId, Valid (line));
                 $fwrite(dmaRespLog, "time %t: rd miss %x\n\n", $time, dmaId);
             end
@@ -1059,7 +1075,7 @@ module mkTbL1LL(Empty);
                     $finish;
                 end
                 let req = validValue(r);
-                Line line <- refMem.readLine(req.addr);
+                Line line <- refMem.readMemLine(req.addr);
                 dmaRefRdHitTable.upd(dmaId, Valid (line));
                 $fwrite(dmaRespLog, "time %t: rd hit %x\n\n", $time, dmaId);
             end
@@ -1094,9 +1110,9 @@ module mkTbL1LL(Empty);
                 Maybe#(Line) missResp = dmaRefRdMissTable.sub(resp.id);
                 Maybe#(Line) hitResp = dmaRefRdHitTable.sub(resp.id);
                 $fwrite(dmaRespLog, "time %t: resp %x Rd\n", $time,
+                    "dut resp: ", fshow(resp.data), "\n",
                     "miss ref: ", fshow(missResp), "\n",
-                    "hit ref: ", fshow(hitResp), "\n",
-                    "dut resp: ", fshow(resp.data), "\n\n"
+                    "hit ref: ", fshow(hitResp), "\n\n"
                 );
                 Line refResp = ?;
                 if(isValid(hitResp) && !isValid(missResp)) begin

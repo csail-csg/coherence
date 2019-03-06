@@ -227,6 +227,13 @@ interface InstServer#(numeric type supSz);
 `endif
 endinterface
 
+typedef struct {
+    Addr addr;
+`ifdef DEBUG_ICACHE
+    Bit#(64) id; // incremening id for each incoming I$ req (0,1,...)
+`endif
+} ProcRqToI deriving(Bits, Eq, FShow);
+
 // child/parent req/resp
 typedef struct {
     Addr addr;
@@ -274,6 +281,26 @@ interface ParentCacheToChild#(type cRqIdT, type childT);
     interface FifoEnq#(CRqMsg#(cRqIdT, childT)) rqFromC;
     interface FifoDeq#(PRqRsMsg#(cRqIdT, childT)) toC;
 endinterface
+
+// unified child req & dma req
+typedef union tagged {
+    cRqIdT Child;
+    dmaRqIdT Dma;
+} LLRqId#(type cRqIdT, type dmaRqIdT) deriving(Bits, Eq, FShow);
+
+typedef struct {
+    // common addr
+    Addr addr;
+    // child req stuff
+    Msi fromState;
+    Msi toState;
+    Bool canUpToE;
+    childT child;
+    // dma req stuff
+    LineByteEn byteEn;
+    // req id: distinguish between child and dma
+    LLRqId#(cRqIdT, dmaRqIdT) id;
+} LLRq#(type cRqIdT, type dmaRqIdT, type childT) deriving(Bits, Eq, FShow);
 
 // memory msg
 typedef struct {

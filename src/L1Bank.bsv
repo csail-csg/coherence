@@ -48,6 +48,12 @@ import Performance::*;
 import LatencyTimer::*;
 import RandomReplace::*;
 
+export L1CRqStuck(..);
+export L1PRqStuck(..);
+export L1Bank(..);
+export mkL1Bank;
+export mkL1Cache;
+
 // although pRq never appears in dependency chain
 // we still need pRq MSHR to limit the number of pRq
 // and thus limit the size of rsToPIndexQ

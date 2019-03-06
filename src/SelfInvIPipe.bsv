@@ -26,13 +26,14 @@ import ConfigReg::*;
 import Vector::*;
 import FShow::*;
 import Types::*;
+import Fifo::*;
 import CCTypes::*;
 import CCPipe::*;
 import RWBramCore::*;
 import RandomReplace::*;
 
 export SelfInvIPipeRqIn(..);
-export SeflInvIPipePRsIn(..);
+export SelfInvIPipePRsIn(..);
 export SelfInvIPipeIn(..);
 export SelfInvICmd(..);
 export SelfInvIPipe(..);
@@ -123,8 +124,8 @@ module mkCacheStateArray(CacheStateArray#(indexT)) provisos(
     Alias#(indexT, Bit#(indexSz)),
     NumAlias#(size, TExp#(indexSz))
 );
-    staticAssert(pack(Msi'I) == 2'd0, "I = 0");
-    staticAssert(pack(Msi'S) == 2'd1, "S = 0");
+    staticAssert(pack(Msi'(I)) == 2'd0, "I = 0");
+    staticAssert(pack(Msi'(S)) == 2'd1, "S = 0");
 
     Vector#(size, Reg#(Bit#(1))) state <- replicateM(mkConfigReg(0));
     Fifo#(1, Msi) rdRespQ <- mkPipelineFifo;
@@ -148,7 +149,7 @@ module mkCacheStateArray(CacheStateArray#(indexT)) provisos(
             s <= 0;
         endaction
         endfunction
-        joinActions(map(resetS, states));
+        joinActions(map(resetS, state));
     endmethod
 endmodule
 
@@ -159,7 +160,7 @@ typedef struct {
     otherT other;
 } TagOwnerOther#(type tagT, type ownerT, type otherT) deriving(Bits, Eq, FShow);
 
-interface CacheInfoArray(type indexT, type tagT, type ownerT, type otherT);
+interface CacheInfoArray#(type indexT, type tagT, type ownerT, type otherT);
     interface RWBramCore#(indexT, CacheInfo#(tagT, Msi, void, ownerT, otherT)) ram;
     method Action reconcile;
 endinterface
@@ -178,7 +179,7 @@ module mkCacheInfoArray(CacheInfoArray#(indexT, tagT, ownerT, otherT)) provisos(
 
     interface RWBramCore ram;
         method Action wrReq(indexT idx, infoT x);
-            tagOwnerOtherRam.wrReq(idx, TagOwner {
+            tagOwnerOtherRam.wrReq(idx, TagOwnerOther {
                 tag: x.tag,
                 owner: x.owner,
                 other: x.other
@@ -201,7 +202,7 @@ module mkCacheInfoArray(CacheInfoArray#(indexT, tagT, ownerT, otherT)) provisos(
             };
         endmethod
         method Bool rdRespValid;
-            return tagOwnerOtherRam.rdRespvalid && csArray.ram.rdRespValid;
+            return tagOwnerOtherRam.rdRespValid && csArray.ram.rdRespValid;
         endmethod
         method Action deqRdResp;
             tagOwnerOtherRam.deqRdResp;
@@ -222,7 +223,7 @@ module mkSelfInvIPipe(
     Alias#(repT, RandRepInfo),
     Alias#(pipeInT, SelfInvIPipeIn#(wayT, cRqIdxT)),
     Alias#(pipeCmdT, SelfInvIPipeCmd#(wayT, cRqIdxT)),
-    Alias#(iCmdT, SelfInvICmd#(indexT, cRqIdxT)),
+    Alias#(iCmdT, SelfInvICmd#(cRqIdxT)),
     Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, dirT, ownerT, otherT, repT, Line, iCmdT)), // output type
     Alias#(infoT, CacheInfo#(tagT, Msi, dirT, ownerT, otherT)),
     Alias#(ramDataT, RamData#(tagT, Msi, dirT, ownerT, otherT, Line)),
@@ -357,7 +358,7 @@ module mkSelfInvIPipe(
     endactionvalue
     endfunction
 
-    function ActionValue#(UpdateByDownDir#(Msi, dirT) updateByDownDir(
+    function ActionValue#(UpdateByDownDir#(Msi, dirT)) updateByDownDir(
         pipeCmdT cmd, Msi toState, Bool dataV, Msi oldCs, dirT oldDir
     );
     actionvalue
@@ -384,12 +385,21 @@ module mkSelfInvIPipe(
     // pipeline enq while we are waiting. Make the reconcile rule conflict with
     // pipeline deq to remove any possible race (the guard of reconcile rule
     // actually should have done the job). 
+    // Since send method will not fire when needReconcile, we can use a wire to
+    // catch pipeline empty signal to avoid scheduling issue
     Reg#(Bool) needReconcile <- mkReg(False);
 
     RWire#(void) conflict_reconcile_deq <- mkRWire;
     
-    rule doReconcile(initDone && needReconcile && pipe.emptyForFlush);
-        function Action flush(CacheInfoArray#(indexT, tagT, ownerT) ifc);
+    PulseWire pipeEmpty <- mkPulseWire;
+
+    (* fire_when_enabled, no_implicit_conditions *)
+    rule setPipeEmpty(pipe.emptyForFlush);
+        pipeEmpty.send;
+    endrule
+    
+    rule doReconcile(initDone && needReconcile && pipeEmpty);
+        function Action flush(CacheInfoArray#(indexT, tagT, ownerT, otherT) ifc);
         action
             ifc.reconcile;
         endaction

@@ -1024,8 +1024,8 @@ module mkSelfInvL1Cache#(
     end
 
 `ifdef CHECK_DEADLOCK
-    FIFO#(L1CRqStuck) cRqStuckQ <- mkFIFO1;
-    FIFO#(L1PRqStuck) pRqStuckQ <- mkFIFO1;
+    FIFO#(SelfInvL1CRqStuck) cRqStuckQ <- mkFIFO1;
+    FIFO#(SelfInvL1PRqStuck) pRqStuckQ <- mkFIFO1;
 
     for(Integer i = 0; i < valueof(bankNum); i = i+1) begin
         rule sendCRqStuck;

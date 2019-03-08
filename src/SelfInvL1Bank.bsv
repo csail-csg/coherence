@@ -76,6 +76,10 @@ export mkSelfInvL1Cache;
 // - Hit count is reset to 0 when state is upgraded by parent (I->S, S->E/M)
 // - Hit count does not change when state is downgraded
 
+// XXX Link addr reserved by LR is only valid if the line is in E/M state,
+// because parent does not track S copies. Self-inv only downgrades from S to
+// I, so it won't affect link addr.
+
 typedef struct {
     Addr addr;
     MemOp op;
@@ -363,6 +367,7 @@ module mkSelfInvL1Bank#(
             fshow(slot), " ; ", 
             fshow(cRqToP)
         );
+        doAssert(slot.cs == I, "we always self-inv before req to parent");
 `ifdef PERF_COUNT
         // performance counter: start miss timer
         latTimer.start(n);
@@ -466,6 +471,8 @@ module mkSelfInvL1Bank#(
                     // req.toState is possible in many cache hit cases (e.g.,
                     // req S and hit in M).  req.toState > ram.info.cs is also
                     // possible in case of req M and hit E.
+                    // Note that the S->I self-inv does not affect link addr,
+                    // which is maintained only in E/M.
                     cs: needSelfInv ? I : max(ram.info.cs, req.toState),
                     dir: ?,
                     owner: succ,
@@ -536,8 +543,13 @@ module mkSelfInvL1Bank#(
         Maybe#(cRqIdxT) cRqEOC = cRqMshr.pipelineResp.searchEndOfChain(procRq.addr);
 
         // function to process cRq miss without replacement (MSHR slot may have garbage)
-        // This also include the case of sliently replacing S line 
-        function Action cRqMissNoReplacement(Bool silentRep);
+        // This also includes the case of sliently replacing S line.
+        // In either case, cs must be I or S, otherwise we cache hit or need
+        // explicit eviction. Therefore, it is equivalent to always silently
+        // evicting the current line.
+        // Note that the S->I self-inv does not affect link addr, which is
+        // maintained only in E/M.
+        function Action cRqMissNoReplacement;
         action
             cRqSlotT cSlot = cRqMshr.pipelineResp.getSlot(n);
             // it is impossible in L1 to have slot.waitP == True in this function
@@ -545,16 +557,14 @@ module mkSelfInvL1Bank#(
             // and this func is only called when cs < toState (otherwise will hit)
             // because L1 has no children to wait for
             doAssert(!cSlot.waitP, "waitP must be false");
-            if(!silentRep) begin
-                doAssert(!enoughCacheState(ram.info.cs, procRq.toState), "cs cannot be enough");
-            end
+            doAssert(ram.info.cs <= S, "cs cannot exceed S");
             // Thus we must send req to parent 
             // XXX first send to a temp indexQ to avoid conflict, then merge to rqToPIndexQ later
             rqToPIndexQ_pipelineResp.enq(n);
             // update mshr
             cRqMshr.pipelineResp.setStateSlot(n, WaitSt, L1CRqSlot {
                 way: pipeOut.way, // use way from pipeline
-                cs: silentRep ? I : ram.info.cs, // record cs for future rqToPIndexQ.deq
+                cs: I,
                 repTag: ?, // no explicit replacement
                 waitP: True // we have req parent, so waiting
             });
@@ -562,7 +572,7 @@ module mkSelfInvL1Bank#(
             pipeline.deqWrite(Invalid, RamData {
                 info: CacheInfo {
                     tag: getTag(procRq.addr), // tag may be garbage if cs == I or silent replace
-                    cs: silentRep ? I : ram.info.cs,
+                    cs: I,
                     dir: ?,
                     owner: Valid (n), // owner is req itself
                     other: ram.info.other // hit count will be reset later when pRs arrives
@@ -575,6 +585,7 @@ module mkSelfInvL1Bank#(
         // function to do replacement for cRq
         function Action cRqReplacement;
         action
+            doAssert(ram.info.cs >= E, "must be exclusive");
             // deq pipeline
             pipeline.deqWrite(Invalid, RamData {
                 info: CacheInfo {
@@ -643,7 +654,7 @@ module mkSelfInvL1Bank#(
                 end
                 else (* nosplit *) begin
                     $display("%t L1 %m pipelineResp: cRq: own by itself, miss no replace", $time);
-                    cRqMissNoReplacement(False);
+                    cRqMissNoReplacement;
                 end
             end
         end
@@ -675,7 +686,7 @@ module mkSelfInvL1Bank#(
                         $display("%t L1 %m pipelineResp: cRq: ",
                                  "no owner, miss no replace, silent replace ",
                                  $time, fshow(silent_replace));
-                        cRqMissNoReplacement(silent_replace);
+                        cRqMissNoReplacement;
                     end
                 end
             end
@@ -752,8 +763,9 @@ module mkSelfInvL1Bank#(
             rsToPIndexQ.enq(PRq (n));
         end
 
-        // since pRq is always processed in one shot, we reset link addr here together
-        if(linkAddr == Valid (getLineAddr(pRq.addr)) && pRq.toState == I) begin
+        // since pRq is always processed in one shot, and it always downgrades
+        // from exclusive, we reset link addr here
+        if(linkAddr == Valid (getLineAddr(pRq.addr))) begin
             linkAddr <= Invalid;
         end
     endrule

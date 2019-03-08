@@ -62,6 +62,8 @@ import RandomReplace::*;
 
 // XXX mem resp that refill cache are for child req, others that don't refill cache are for DMA req
 
+// XXX Directory should be I (instead of don't care) when cache state is invalid
+
 // naming rule: child req type names < dma type names
 
 export SelfInvLLBank(..);
@@ -1181,6 +1183,9 @@ module mkSelfInvLLBank#(
                             cRqFromCHit(n, cRq);
                         end
                         else begin
+                            // line valid but miss by children, OR occupy an
+                            // invalid line (dirPend must be Invalid in this
+                            // case)
                             $display("%t LL %m pipelineResp: cRq: no owner, miss no replace: ", $time,
                                 fshow(dirPend)
                             );

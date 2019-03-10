@@ -92,6 +92,12 @@ interface L1Bank#(
     method Data getPerfData(L1DPerfType t);
 endinterface
 
+typedef struct {
+    cRqIdxT n; // AMO req MSHR idx
+    cRqT req; // AMO req
+    Maybe#(cRqIdxT) succ; // same-addr-successor of AMO req
+} AmoHitInfo#(type cRqIdxT, type cRqT) deriving(Bits, Eq, FShow);
+
 module mkL1Bank#(
     Bit#(lgBankNum) bankId,
     module#(L1CRqMshr#(cRqNum, wayT, tagT, procRqT)) mkL1CRqMshrLocal,
@@ -142,6 +148,9 @@ module mkL1Bank#(
 
     FIFO#(MshrIndex#(cRqIdxT, pRqIdxT)) rsToPIndexQ <- mkSizedFIFO(valueOf(TAdd#(cRqNum, pRqNum)));
 
+    // mshr index of req that is waken up Sc fails early (before hit)
+    Fifo#(cRqNum, cRqIdxT) cRqRetryIndexQ <- mkCFFifo;
+
     FIFO#(cRqIdxT) rqToPIndexQ <- mkSizedFIFO(valueOf(cRqNum));
     // temp fifo for pipelineResp & sendRsToP (reduce conflict)
     FIFO#(cRqIdxT) rqToPIndexQ_pipelineResp <- mkFIFO;
@@ -152,7 +161,7 @@ module mkL1Bank#(
     Reg#(Maybe#(LineAddr)) linkAddrRst = linkAddrEhr[1]; // reset by outside use port 1
 
     // we process AMO resp in a new cycle to cut critical path
-    Reg#(Maybe#(Tuple2#(cRqIdxT, procRqT))) processAmo <- mkReg(Invalid);
+    Reg#(Maybe#(AmoHitInfo#(cRqIdxT, procRqT))) processAmo <- mkReg(Invalid);
 
     // security flush
 `ifdef SECURITY
@@ -218,12 +227,32 @@ module mkL1Bank#(
 
     function tagT getTag(Addr a) = truncateLSB(a);
 
+    // send retrying cRq (which follows early failed Sc) to pipeline
+    rule cRqTransfer_retry(cRqRetryIndexQ.notEmpty);
+        cRqRetryIndexQ.deq;
+        cRqIdxT n = cRqRetryIndexQ.first;
+        // XXX don't change MSHR entry to Init
+        // later cRq to same addr needs to be appended after this one, and we
+        // need to know that we should not append this one to other cRq to the
+        // same addr
+        // send to pipeline
+        procRqT req = cRqMshr.cRqTransfer.getRq(n);
+        pipeline.send(CRq (L1PipeRqIn {
+            addr: req.addr,
+            mshrIdx: n
+        }));
+        $display("%t L1 %m cRqTransfer_retry: ", $time, 
+            fshow(n), " ; ", 
+            fshow(req)
+        );
+    endrule
+
     // although D$ may not have cRq at every cycle
     // we still make cRq has lower priorty than pRq/pRs
     // we stop accepting cRq when we need to flush for security
-    rule cRqTransfer(flushDone);
+    rule cRqTransfer_new(!cRqRetryIndexQ.notEmpty && flushDone);
         procRqT r <- toGet(rqFromCQ).get;
-        cRqIdxT n <- cRqMshr.getEmptyEntryInit(r);
+        cRqIdxT n <- cRqMshr.cRqTransfer.getEmptyEntryInit(r);
         // send to pipeline
         pipeline.send(CRq (L1PipeRqIn {
             addr: r.addr, 
@@ -233,13 +262,13 @@ module mkL1Bank#(
         // performance counter: cRq type
         incrReqCnt(r.op);
 `endif
-        $display("%t L1 %m cRqTransfer: ", $time, 
+        $display("%t L1 %m cRqTransfer_new: ", $time, 
             fshow(n), " ; ",
             fshow(r)
         );
     endrule
 
-    (* descending_urgency = "pRqTransfer, cRqTransfer" *)
+    (* descending_urgency = "pRqTransfer, cRqTransfer_retry, cRqTransfer_new" *)
     rule pRqTransfer(fromPQ.first matches tagged PRq .req);
         fromPQ.deq;
         pRqIdxT n <- pRqMshr.getEmptyEntryInit(req);
@@ -254,7 +283,7 @@ module mkL1Bank#(
         );
     endrule
 
-    (* descending_urgency = "pRsTransfer, cRqTransfer" *)
+    (* descending_urgency = "pRsTransfer, cRqTransfer_retry, cRqTransfer_new" *)
     rule pRsTransfer(fromPQ.first matches tagged PRs .resp);
         fromPQ.deq;
         pipeline.send(PRs (L1PipePRsIn {
@@ -406,6 +435,9 @@ module mkL1Bank#(
         default: (fromMaybe(0, ram.info.owner)); // L1PRs and L1PRq
     endcase);
     procRqT pipeOutCRq = cRqMshr.pipelineResp.getRq(pipeOutCRqIdx);
+    L1CRqState pipeOutCState = cRqMshr.pipelineResp.getState(pipeOutCRqIdx);
+    cRqSlotT pipeOutCSlot = cRqMshr.pipelineResp.getSlot(pipeOutCRqIdx);
+    Maybe#(cRqIdxT) pipeOutSucc = cRqMshr.pipelineResp.getSucc(pipeOutCRqIdx);
 
     // function to process cRq hit (MSHR slot may have garbage)
     function Action cRqHit(cRqIdxT n, procRqT req);
@@ -461,8 +493,8 @@ module mkL1Bank#(
         endcase
         // deq pipeline or swap in successor ONLY when not AMO: to cut critical
         // path for AMO
+        Maybe#(cRqIdxT) succ = pipeOutSucc;
         if(req.op != Amo) begin
-            Maybe#(cRqIdxT) succ = cRqMshr.pipelineResp.getSucc(n);
             pipeline.deqWrite(succ, RamData {
                 info: CacheInfo {
                     tag: getTag(req.addr), // should be the same as original tag
@@ -485,13 +517,22 @@ module mkL1Bank#(
             cRqMshr.pipelineResp.releaseEntry(n);
         end
         else begin
-            processAmo <= Valid (tuple2(n, req));
+            processAmo <= Valid (AmoHitInfo {
+                n: n,
+                req: req,
+                succ: succ
+            });
             $display("%t L1 %m pipelineResp: Hit func: AMO process in next cycle", $time);
         end
     endaction
     endfunction
 
-    rule doProcessAmo(processAmo matches tagged Valid {.n, .req});
+    rule doProcessAmo(processAmo matches tagged Valid .amoHit);
+        // extract amo req
+        cRqIdxT n = amoHit.n;
+        procRqT req = amoHit.req;
+        Maybe#(cRqIdxT) succ = amoHit.succ;
+        // get line and sel
         Line curLine = ram.line;
         Line newLine = curLine;
         LineDataOffset dataSel = getLineDataOffset(req.addr);
@@ -505,7 +546,6 @@ module mkL1Bank#(
         // calculate new data to write
         newLine[dataSel] = amoExec(req.amoInst, curData, req.data, upper32);
         // deq pipeline or swap in successor
-        Maybe#(cRqIdxT) succ = cRqMshr.pipelineResp.getSucc(n);
         pipeline.deqWrite(succ, RamData {
             info: CacheInfo {
                 tag: getTag(req.addr), // should be the same as original tag
@@ -536,10 +576,43 @@ module mkL1Bank#(
         // find end of dependency chain
         Maybe#(cRqIdxT) cRqEOC = cRqMshr.pipelineResp.searchEndOfChain(procRq.addr);
 
+        function Action cRqScEarlyFail(Bool resetOwner);
+        action
+            // resp to proc
+            procResp.respLrScAmo(procRq.id, fromInteger(valueof(ScFailVal)));
+            // reset link addr
+            linkAddr <= Invalid;
+            // deq pipeline (we cannot swap in successor because Sc may not
+            // occupy a line). We don't touch cache contents, but we may reset
+            // line owner.
+            pipeline.deqWrite(Invalid, RamData {
+                info: CacheInfo {
+                    tag: ram.info.tag,
+                    cs: ram.info.cs,
+                    dir: ram.info.dir,
+                    owner: resetOwner ? Invalid : ram.info.owner,
+                    other: ram.info.other
+                },
+                line: ram.line
+            }, False);
+            // retry successor
+            Maybe#(cRqIdxT) succ = pipeOutSucc;
+            if(succ matches tagged Valid .s) begin
+                cRqRetryIndexQ.enq(s);
+            end
+            // release MSHR entry
+            cRqMshr.pipelineResp.releaseEntry(n);
+            $display("%t L1 %m pipelineResp: Sc early fail func: ", $time,
+                fshow(resetOwner), " ; ",
+                fshow(succ)
+            );
+        endaction
+        endfunction
+
         // function to process cRq miss without replacement (MSHR slot may have garbage)
         function Action cRqMissNoReplacement;
         action
-            cRqSlotT cSlot = cRqMshr.pipelineResp.getSlot(n);
+            cRqSlotT cSlot = pipeOutCSlot;
             // it is impossible in L1 to have slot.waitP == True in this function
             // because cRq is not set to Depend when pRq invalidates it (pRq just directly resp)
             // and this func is only called when cs < toState (otherwise will hit)
@@ -611,15 +684,23 @@ module mkL1Bank#(
         endaction
         endfunction
 
-        //(* split *)
-        if(ram.info.owner matches tagged Valid .cOwner) (* nosplit *) begin
-            //(* split *)
-            if(cOwner != n) (* nosplit *) begin
+        // check if Sc fails early. If an Sc needs to req parent but it's addr
+        // does not match link addr, we can directly respond the Sc with
+        // failure, and thus avoid requesting parent.
+        Bool scFail = procRq.op == Sc && linkAddr != Valid (getLineAddr(procRq.addr));
+        // check tag match
+        Bool tag_match = ram.info.tag == getTag(procRq.addr);
+        // check enough cache state for hit
+        Bool enough_cs = enoughCacheState(ram.info.cs, procRq.toState);
+        // check if cs is not I
+        Bool cs_valid = ram.info.cs > I;
+
+        if(ram.info.owner matches tagged Valid .cOwner) begin
+            if(cOwner != n) begin
                 // owner is another cRq, so must just go through tag match
                 // tag match must be hit (because replacement algo won't give a way with owner)
-                doAssert(ram.info.cs > I && ram.info.tag == getTag(procRq.addr), 
-                    ("cRq should hit in tag match")
-                );
+                doAssert(pipeOutCState == Init, "must first time go through tag match");
+                doAssert(cs_valid && tag_match, "cRq should hit in tag match");
                 // should be added to a cRq in dependency chain & deq from pipeline
                 doAssert(isValid(cRqEOC), ("cRq hit on another cRq, cRqEOC must be true"));
                 cRqMshr.pipelineResp.setSucc(fromMaybe(?, cRqEOC), Valid (n));
@@ -628,50 +709,75 @@ module mkL1Bank#(
                     fshow(cOwner), ", depend on cRq ", fshow(cRqEOC)
                 );
             end
-            else (* nosplit *) begin
+            else begin
                 // owner is myself, so must be swapped in
                 // tag should match, since always swapped in by cRq, cs > I
-                doAssert(ram.info.tag == getTag(procRq.addr) && ram.info.cs > I,
+                doAssert(pipeOutCState == Depend, "must be swapped in");
+                doAssert(cs_valid && tag_match,
                     "cRq swapped in by previous cRq, tag must match & cs > I"
                 );
                 // Hit or Miss (but no replacement)
-                //(* split *)
-                if(enoughCacheState(ram.info.cs, procRq.toState)) (* nosplit *) begin
+                if(enough_cs) begin
                     $display("%t L1 %m pipelineResp: cRq: own by itself, hit", $time);
                     cRqHit(n, procRq);
                 end
-                else (* nosplit *) begin
+                else if(scFail) begin
+                    // Sc already fails, so we don't need to req parent.  Since
+                    // Sc is the owner of the line, we need to reset owner to
+                    // Invalid.
+                    $display("%t L1 %m pipelineResp: cRq: own by itself, Sc early fails, ",
+                        $time, fshow(linkAddr)
+                    );
+                    cRqScEarlyFail(True);
+                end
+                else begin
                     $display("%t L1 %m pipelineResp: cRq: own by itself, miss no replace", $time);
                     cRqMissNoReplacement;
                 end
             end
         end
-        else (* nosplit *) begin
+        else begin
             // cache has no owner, cRq must just go through tag match
+            // Here are two cases:
+            // 1. cRq in Init state, first time go through tag match
+            // 2. cRq addr-depends on an Sc which fails early, just got waken up
+            L1CRqState cState = pipeOutCState;
+
             // check for cRqEOC to append to dependency chain
-            //(* split *)
-            if(cRqEOC matches tagged Valid .k) (* nosplit *) begin
-                $display("%t L1 %m pipelineResp: cRq: no owner, depend on cRq ", $time, fshow(k));
+            // Only append to dep-chain if is in Init state
+            if(cRqEOC matches tagged Valid .k &&& cState == Init) begin
+                $display("%t L1 %m pipelineResp: cRq: no owner, depend on cRq, ", $time,
+                    fshow(cState), " ; ", fshow(cRqEOC)
+                );
                 cRqMshr.pipelineResp.setSucc(k, Valid (n));
                 cRqSetDepNoCacheChange;
             end
-            else (* nosplit *) begin
-                //(* split *)
-                if(ram.info.cs == I || ram.info.tag == getTag(procRq.addr)) (* nosplit *) begin
-                    // No Replacement necessary
-                    //(* split *)
-                    if(enoughCacheState(ram.info.cs, procRq.toState)) (* nosplit *) begin
-                        $display("%t L1 %m pipelineResp: cRq: no owner, hit", $time);
-                        cRqHit(n, procRq);
-                    end
-                    else (* nosplit *) begin
-                        $display("%t L1 %m pipelineResp: cRq: no owner, miss no replace", $time);
-                        cRqMissNoReplacement;
-                    end
+            else begin
+                // Check hit or miss, replacment may be needed
+                if(tag_match && enough_cs) begin
+                    // Hit
+                    doAssert(cs_valid, "hit, so cs must > I");
+                    $display("%t L1 %m pipelineResp: cRq: no owner, hit", $time);
+                    cRqHit(n, procRq);
                 end
-                else (* nosplit *) begin
+                else if(scFail) begin
+                    // Sc already fails, so we don't need to req parent.  Since
+                    // there is no owner of the line, we can reset owner to
+                    // Invalid.
+                    $display("%t L1 %m pipelineResp: cRq: no owner, Sc early fails, ",
+                        $time, fshow(linkAddr)
+                    );
+                    cRqScEarlyFail(True);
+                end
+                else if(cs_valid && !tag_match) begin
+                    // Req parent, need replacement
                     $display("%t L1 %m pipelineResp: cRq: no owner, replace", $time);
                     cRqReplacement;
+                end
+                else begin
+                    $display("%t L1 %m pipelineResp: cRq: no owner, miss no replace", $time);
+                    // Req parent, no replacement needed
+                    cRqMissNoReplacement;
                 end
             end
         end
@@ -721,8 +827,8 @@ module mkL1Bank#(
         else if(ram.info.owner matches tagged Valid .cOwner) begin
             procRqT cRq = pipeOutCRq;
             // must be the case the pRq overtakes cRq
-            L1CRqState cState = cRqMshr.pipelineResp.getState(cOwner);
-            cRqSlotT cSlot = cRqMshr.pipelineResp.getSlot(cOwner);
+            L1CRqState cState = pipeOutCState;
+            cRqSlotT cSlot = pipeOutCSlot;
             $display("%t L1 %m pipelineResp: pRq: overtake cRq: ", $time,
                 fshow(cOwner), " ; ",
                 fshow(cRq), " ; ",

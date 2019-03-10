@@ -124,7 +124,12 @@ typedef enum {Child, Dma} LLCRqSrc deriving(Bits, Eq, FShow);
 
 module mkLLBank#(
     module#(LLCRqMshr#(cRqNum, wayT, tagT, Vector#(childNum, DirPend), cRqT)) mkLLMshr,
-    module#(LLPipe#(lgBankNum, childNum, wayNum, indexT, tagT, cRqIndexT)) mkLLPipeline
+    module#(LLPipe#(lgBankNum, childNum, wayNum, indexT, tagT, cRqIndexT)) mkLLPipeline,
+    // Whether we resp a load request (to S) with E permission. The directory
+    // is all I when this function is called. fetchFromMem indicates whether
+    // the data is just fetched from DRAM or not. Any function given here will
+    // not affect correctness of coherence protocol.
+    function Bool respLoadWithE(Bool fetchFromMem)
 )(
     LLBank#(lgBankNum, childNum, wayNum, indexSz, tagSz, cRqNum, cRqIdT, dmaRqIdT)
 ) provisos(
@@ -765,7 +770,7 @@ module mkLLBank#(
     cRqT pipeOutCRq = cRqMshr.pipelineResp.getRq(pipeOutCRqIdx);
 
     // function to process cRq hit (MSHR slot may have garbage)
-    function Action cRqFromCHit(cRqIndexT n, cRqT cRq);
+    function Action cRqFromCHit(cRqIndexT n, cRqT cRq, Bool isMRs);
     action
         $display("%t LL %m pipelineResp: cRq from child Hit func: ", $time, 
             fshow(n), " ; ",
@@ -781,7 +786,7 @@ module mkLLBank#(
         );
         // decide upgrade state
         Msi toState = cRq.toState;
-        if(cRq.toState == S && cRq.canUpToE && ram.info.dir == replicate(I)) begin
+        if(cRq.toState == S && cRq.canUpToE && ram.info.dir == replicate(I) && respLoadWithE(isMRs)) begin
             toState = E;
         end
         // update slot, data & send to indexQ
@@ -1135,7 +1140,7 @@ module mkLLBank#(
                     Vector#(childNum, DirPend) dirPend = getDirPendNonCompatForChild;
                     if(dirPend == replicate(Invalid)) begin
                         $display("%t LL %m pipelineResp: cRq from child: own by itself, hit", $time);
-                        cRqFromCHit(n, cRq);
+                        cRqFromCHit(n, cRq, False);
                     end
                     else begin
                         $display("%t LL %m pipelineResp: cRq from child: own by itself, miss no replace: ", $time,
@@ -1183,7 +1188,7 @@ module mkLLBank#(
                         Vector#(childNum, DirPend) dirPend = getDirPendNonCompatForChild;
                         if(ram.info.cs > I && dirPend == replicate(Invalid)) begin
                             $display("%t LL %m pipelineResp: cRq: no owner, hit", $time);
-                            cRqFromCHit(n, cRq);
+                            cRqFromCHit(n, cRq, False);
                         end
                         else begin
                             $display("%t LL %m pipelineResp: cRq: no owner, miss no replace: ", $time,
@@ -1262,7 +1267,7 @@ module mkLLBank#(
             "cRq that needs mRs should not have children to wait for"
         );
         // cRq hits since all children are I
-        cRqFromCHit(cOwner.mshrIdx, cRq);
+        cRqFromCHit(cOwner.mshrIdx, cRq, True);
     endrule
 
     // handle cRs
@@ -1345,7 +1350,7 @@ module mkLLBank#(
                 // check hit or miss
                 if(newDirPend == replicate(Invalid)) begin
                     if(cRq.id matches tagged Child ._i) begin
-                        cRqFromCHit(cOwner.mshrIdx, cRq);
+                        cRqFromCHit(cOwner.mshrIdx, cRq, False);
                     end
                     else begin
                         cRqFromDmaHit(cOwner.mshrIdx, cRq);

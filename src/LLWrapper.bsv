@@ -53,6 +53,8 @@ typedef LLBank#(LgLLBankNum, LLChildNum, LLWayNum, LLIndexSz, LLTagSz, LLCRqNum,
 
 (* synthesize *)
 module mkLLBankWrapper(LLBankWrapper);
-    let m <- mkLLBank(mkLastLvCRqMshr, mkLLPipeline);
+    // resp load req with E when it fills cache line from mem
+    function Bool respE(Bool fromMem) = fromMem;
+    let m <- mkLLBank(mkLastLvCRqMshr, mkLLPipeline, respE);
     return m;
 endmodule

@@ -74,6 +74,15 @@ typedef struct {
 // MSHR data is purely for replacement resp to parent
 // (resp to processor is done immediately, no data buffering needed)
 
+// port for cRqTransfer and retry
+interface L1CRqMshr_transfer#(
+    numeric type cRqNum,
+    type reqT
+);
+    method reqT getRq(Bit#(TLog#(cRqNum)) n);
+    method ActionValue#(Bit#(TLog#(cRqNum))) getEmptyEntryInit(reqT r);
+endinterface
+
 // port for sendRsToP_cRq
 interface L1CRqMshr_sendRsToP_cRq#(
     numeric type cRqNum,
@@ -141,8 +150,8 @@ interface L1CRqMshr#(
     type tagT,
     type reqT // child req type
 );
-    // port for cRqTransfer, initialization is done inside method
-    method ActionValue#(Bit#(TLog#(cRqNum))) getEmptyEntryInit(reqT r); 
+    // port for cRqTransfer and retry
+    interface L1CRqMshr_transfer#(cRqNum, reqT) cRqTransfer;
 
     // port for sendRsToP_cRq
     interface L1CRqMshr_sendRsToP_cRq#(cRqNum, wayT, tagT, reqT) sendRsToP_cRq;
@@ -231,19 +240,25 @@ module mkL1CRqMshrSafe#(
     endrule
 `endif
 
-    method ActionValue#(cRqIndexT) getEmptyEntryInit(reqT r) if(inited);
-        emptyEntryQ.deq;
-        cRqIndexT n = emptyEntryQ.first;
-        stateVec[n][cRqTransfer_port] <= Init;
-        slotVec[n][cRqTransfer_port] <= defaultValue;
-        dataValidVec[n][cRqTransfer_port] <= False;
-        succValidVec[n][cRqTransfer_port] <= False;
-        reqVec[n][cRqTransfer_port] <= r;
+    interface L1CRqMshr_transfer cRqTransfer;
+        method reqT getRq(cRqIndexT n);
+            return reqVec[n][cRqTransfer_port];
+        endmethod
+
+        method ActionValue#(cRqIndexT) getEmptyEntryInit(reqT r) if(inited);
+            emptyEntryQ.deq;
+            cRqIndexT n = emptyEntryQ.first;
+            stateVec[n][cRqTransfer_port] <= Init;
+            slotVec[n][cRqTransfer_port] <= defaultValue;
+            dataValidVec[n][cRqTransfer_port] <= False;
+            succValidVec[n][cRqTransfer_port] <= False;
+            reqVec[n][cRqTransfer_port] <= r;
 `ifdef CHECK_DEADLOCK
-        checker.initEntry(n);
+            checker.initEntry(n);
 `endif
-        return n;
-    endmethod
+            return n;
+        endmethod
+    endinterface
 
     interface L1CRqMshr_sendRsToP_cRq sendRsToP_cRq;
         method L1CRqState getState(cRqIndexT n);

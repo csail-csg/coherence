@@ -1470,7 +1470,7 @@ module mkLLBank#(
             LLCMshrBlockCycles: mshrBlocks;
             LLCDownRespCnt: downRespCnt;
             LLCDownRespDataCnt: downRespDataCnt;
-            LLCDOwnReqCnt: downReqCnt;
+            LLCDownReqCnt: downReqCnt;
             LLCUpRespCnt: upRespCnt;
             LLCUpRespDataCnt: upRespDataCnt;
             LLCDmaLdReqCnt: dmaLdReqCnt;

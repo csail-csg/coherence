@@ -206,6 +206,13 @@ module mkSelfInvLLBank#(
     Count#(Data) normalMemLdCnt <- mkCount(0);
     Count#(Data) normalMemLdLat <- mkCount(0);
     Count#(Data) mshrBlocks <- mkCount(0);
+    Count#(Data) downRespCnt <- mkCount(0);
+    Count#(Data) downRespDataCnt <- mkCount(0);
+    Count#(Data) downReqCnt <- mkCount(0);
+    Count#(Data) upRespCnt <- mkCount(0);
+    Count#(Data) upRespDataCnt <- mkCount(0);
+    Count#(Data) dmaLdReqCnt <- mkCount(0);
+    Count#(Data) dmaStReqCnt <- mkCount(0);
     
     LatencyTimer#(cRqNum, 10) latTimer <- mkLatencyTimer; // max 1K cycle latency
 
@@ -401,6 +408,16 @@ module mkSelfInvLLBank#(
             fshow(r), " ; ", 
             fshow(cRq)
         );
+`ifdef PERF_COUNT
+        if(doStats) begin
+            if(write) begin
+                dmaStReqCnt.incr(1);
+            end
+            else begin
+                dmaLdReqCnt.incr(1);
+            end
+        end
+`endif
     endrule
 
 `ifdef PERF_COUNT
@@ -431,6 +448,14 @@ module mkSelfInvLLBank#(
         cRsFromCT cRs = rsFromCQ.first;
         pipeline.send(CRs (cRs));
         $display("%t LL %m cRsTransfer: ", $time, fshow(cRs));
+`ifdef PERF_COUNT
+        if(doStats) begin
+            downRespCnt.incr(1);
+            if(isValid(cRs.data)) begin
+                downRespDataCnt.incr(1);
+            end
+        end
+`endif
     endrule
     
     // mem resp for child req, will refill cache, send it to pipeline
@@ -659,6 +684,14 @@ module mkSelfInvLLBank#(
         }));
         // release MSHR entry
         cRqMshr.sendRsToDmaC.releaseEntry(n);
+`ifdef PERF_COUNT
+        if(doStats) begin
+            upRespCnt.incr(1);
+            if(isValid(rsData)) begin
+                upRespDataCnt.incr(1);
+            end
+        end
+`endif
     endrule
 
     // send downgrade req to child
@@ -740,6 +773,11 @@ module mkSelfInvLLBank#(
         );
         // change round-robin
         whichCRq <= whichCRq == fromInteger(valueOf(cRqNum) - 1) ? 0 : whichCRq + 1;
+`ifdef PERF_COUNT
+        if(doStats) begin
+            downReqCnt.incr(1);
+        end
+`endif
     endrule
 
     // Final stage of pipeline: process all kinds of msg
@@ -1380,6 +1418,13 @@ module mkSelfInvLLBank#(
             LLCNormalMemLdCnt: normalMemLdCnt;
             LLCNormalMemLdLat: normalMemLdLat;
             LLCMshrBlockCycles: mshrBlocks;
+            LLCDownRespCnt: downRespCnt;
+            LLCDownRespDataCnt: downRespDataCnt;
+            LLCDOwnReqCnt: downReqCnt;
+            LLCUpRespCnt: upRespCnt;
+            LLCUpRespDataCnt: upRespDataCnt;
+            LLCDmaLdReqCnt: dmaLdReqCnt;
+            LLCDmaStReqCnt: dmaStReqCnt;
 `endif
             default: 0;
         endcase);

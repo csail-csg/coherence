@@ -206,6 +206,8 @@ module mkSelfInvL1Bank#(
     Count#(Data) ldMissLat <- mkCount(0);
     Count#(Data) stMissLat <- mkCount(0);
     Count#(Data) amoMissLat <- mkCount(0);
+    Count#(Data) selfInvCnt <- mkCount(0);
+    Count#(Data) reconcileCnt <- mkCount(0);
     
     LatencyTimer#(cRqNum, 10) latTimer <- mkLatencyTimer; // max 1K cycle latency
 
@@ -520,6 +522,11 @@ module mkSelfInvL1Bank#(
             );
             // release MSHR entry
             cRqMshr.pipelineResp.releaseEntry(n);
+`ifdef PERF_COUNT
+            if(doStats && needSelfInv) begin
+                selfInvCnt.incr(1);
+            end
+`endif
         end
         else begin
             processAmo <= Valid (AmoHitInfo {
@@ -899,6 +906,11 @@ module mkSelfInvL1Bank#(
         pipeline.reconcile;
         waitReconcileDone <= True;
         $display("%t L1 %m startReconcile", $time);
+`ifdef PERF_COUNT
+        if(doStats) begin
+            reconcileCnt.incr(1);
+        end
+`endif
     endrule
     rule completeReconcile(needReconcile && waitReconcileDone && pipeline.reconcile_done);
         needReconcile <= False;
@@ -967,6 +979,8 @@ module mkSelfInvL1Bank#(
             L1DLdMissLat: ldMissLat;
             L1DStMissLat: stMissLat;
             L1DAmoMissLat: amoMissLat;
+            L1DSelfInvCnt: selfInvCnt;
+            L1DReconcileCnt: reconcileCnt;
 `endif
             default: 0;
         endcase);

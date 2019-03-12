@@ -149,6 +149,7 @@ module mkSelfInvIBank#(
     Count#(Data) ldCnt <- mkCount(0);
     Count#(Data) ldMissCnt <- mkCount(0);
     Count#(Data) ldMissLat <- mkCount(0);
+    Count#(Data) reconcileCnt <- mkCount(0);
 
     LatencyTimer#(cRqNum, 10) latTimer <- mkLatencyTimer;
 
@@ -465,6 +466,11 @@ module mkSelfInvIBank#(
         pipeline.reconcile;
         waitReconcileDone <= True;
         $display("%t I %m startReconcile", $time);
+`ifdef PERF_COUNT
+        if(doStats) begin
+            reconcileCnt.incr(1);
+        end
+`endif
     endrule
     rule completeReconcile(needReconcile && waitReconcileDone && pipeline.reconcile_done);
         needReconcile <= False;
@@ -546,6 +552,7 @@ module mkSelfInvIBank#(
             L1ILdCnt: ldCnt;
             L1ILdMissCnt: ldMissCnt;
             L1ILdMissLat: ldMissLat;
+            L1IReconcileCnt: reconcileCnt;
 `endif
             default: 0;
         endcase);

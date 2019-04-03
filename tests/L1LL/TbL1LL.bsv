@@ -87,7 +87,12 @@ endfunction
 typedef TAdd#(TSub#(AddrSz, SizeOf#(LLCTag)), TLog#(TagNum)) LgTestMemSzBytes;
 
 // req/resp to/from memory system
-typedef enum {Ld, St, Lr, Sc, Amo} MemTestOp deriving(Bits, Eq, FShow, Bounded);
+typedef enum {
+    Ld, St, Lr, Sc, Amo
+`ifdef STORE_PREFETCH
+    , StPrefetch
+`endif
+} MemTestOp deriving(Bits, Eq, FShow, Bounded);
 
 function MemOp getMemOp(MemTestOp op);
     case(op)
@@ -96,6 +101,9 @@ function MemOp getMemOp(MemTestOp op);
         Lr: return Lr;
         Sc: return Sc;
         Amo: return Amo;
+`ifdef STORE_PREFETCH
+        StPrefetch: return StPrefetch;
+`endif
         default: return ?;
     endcase
 endfunction
@@ -105,6 +113,9 @@ function Msi getToState(MemTestOp op);
         Ld: return S;
         Lr: return E;
         St, Sc, Amo: return M;
+`ifdef STORE_PREFETCH
+        StPrefetch: return E;
+`endif
         default: return ?;
     endcase
 endfunction
@@ -120,7 +131,12 @@ typedef struct {
     AmoInst amoInst; // for Amo
 } MemTestReq deriving(Bits, Eq, FShow);
 
-typedef enum {Ld, St, LrScAmo} MemRespType deriving(Bits, Eq, FShow);
+typedef enum {
+    Ld, St, LrScAmo
+`ifdef STORE_PREFETCH
+    , StPrefetch
+`endif
+} MemRespType deriving(Bits, Eq, FShow);
 typedef struct {
     MemRespType t;
     TestId id;
@@ -132,6 +148,9 @@ function MemRespType getMemRespType(MemTestOp op);
         Ld: return Ld;
         St: return St;
         Lr, Sc, Amo: return LrScAmo;
+`ifdef STORE_PREFETCH
+        StPrefetch: return StPrefetch;
+`endif
         default: return ?;
     endcase
 endfunction
@@ -168,7 +187,7 @@ module mkTbL1LL(Empty);
     // randomize req
     // D$
     Vector#(L1DNum, Randomize#(ReqStall)) randDCReqStall <- replicateM(mkGenericRandomizer);
-    Vector#(L1DNum, Randomize#(MemTestOp)) randDCOp <- replicateM(mkConstrainedRandomizer(Ld, Amo));
+    Vector#(L1DNum, Randomize#(MemTestOp)) randDCOp <- replicateM(mkConstrainedRandomizer(minBound, maxBound));
     Vector#(L1DNum, Randomize#(LLCTag)) randDCTag <- replicateM(mkConstrainedRandomizer(0, fromInteger(valueOf(TagNum) - 1)));
     Vector#(L1DNum, Randomize#(LLCIndex)) randDCIndex <- replicateM(mkConstrainedRandomizer(0, fromInteger(valueOf(IndexNum) - 1)));
     Vector#(L1DNum, Randomize#(LineDataOffset)) randDCDataSel <- replicateM(mkGenericRandomizer);
@@ -270,6 +289,9 @@ module mkTbL1LL(Empty);
     Vector#(L1DNum, Vector#(L1BankNum, Reg#(Data))) scCnt <- replicateM(replicateM(mkReg(0)));
     Vector#(L1DNum, Vector#(L1BankNum, Reg#(Data))) scSuccCnt <- replicateM(replicateM(mkReg(0)));
     Vector#(L1DNum, Vector#(L1BankNum, Reg#(Data))) scFailCnt <- replicateM(replicateM(mkReg(0)));
+`ifdef STORE_PREFETCH
+    Vector#(L1DNum, Vector#(L1BankNum, Reg#(Data))) stPrefetchCnt <- replicateM(replicateM(mkReg(0)));
+`endif
 
     // DUT
     function L1ProcResp#(ProcRqId) getL1ProcResp(Integer i);
@@ -285,6 +307,11 @@ module mkTbL1LL(Empty);
                 let req = validValue(dcReqTable[i].sub(truncate(id)));
                 return tuple2(req.lineBE, req.line);
             endmethod
+`ifdef DEBUG_STORE_PREFETCH
+            method Action respStPrefetch(ProcRqId id);
+                recvDCResp[i].wset(MemTestResp {t: StPrefetch, id: truncate(id), data: ?});
+            endmethod
+`endif
             method Action evict(LineAddr a);
                 noAction;
             endmethod
@@ -774,6 +801,14 @@ module mkTbL1LL(Empty);
                     // stats
                     amoCnt[i][bankId] <= amoCnt[i][bankId] + 1;
                 end
+`ifdef STORE_PREFETCH
+                else if(req.op == StPrefetch) begin
+                    // Store prefetch
+                    $fwrite(dcRespLog[i], "time %t: resp %x StPrefetch\n\n", $time, resp.id);
+                    // stats
+                    stPrefetchCnt[i][bankId] <= stPrefetchCnt[i][bankId] + 1;
+                end
+`endif
                 else begin
                     $fdisplay(stderr, "[TbL1LL] ERROR: D$ %d resp %x unknown op\n", i, resp.id);
                     $finish;
@@ -1146,6 +1181,9 @@ module mkTbL1LL(Empty);
             for(Integer j = 0; j < valueof(L1BankNum); j = j+1) begin
                 $fdisplay(stderr, "STATS: D$ %d bank %d: Ld %d, St %d, Amo %d, Lr %d, Sc %d, Sc succ %d, Sc fail %d",
                     i, j, ldCnt[i][j], stCnt[i][j], amoCnt[i][j], lrCnt[i][j], scCnt[i][j], scSuccCnt[i][j], scFailCnt[i][j]
+`ifdef STORE_PREFETCH
+                    , ", St prefetch %d", stPrefetchCnt[i][j]
+`endif
                 );
             end
         end

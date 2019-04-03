@@ -43,7 +43,6 @@ typedef enum {
     Init,
     WaitNewTag, // waiting replacement resp to send (but tag in RAM is already updated)
     WaitSt, // wait pRs/cRs to come
-    Done, // resp is in index FIFO
     Depend
 } L1CRqState deriving(Bits, Eq, FShow);
 
@@ -139,9 +138,15 @@ interface L1CRqMshr_pipelineResp#(
     method Action setSucc(Bit#(TLog#(cRqNum)) n, Maybe#(Bit#(TLog#(cRqNum))) succ);
     // index in setSucc is usually different from other getXXX methods
 
-    // find existing cRq which has gone through pipeline, but not in Done state, and has not successor
+    // find existing cRq which has gone through pipeline, and has not successor
+    // (there is no Done state in L1 D)
     // i.e. search the end of dependency chain
     method Maybe#(Bit#(TLog#(cRqNum))) searchEndOfChain(Addr addr);
+
+`ifdef STORE_PREFETCH
+    // check if existing cRq has already requested to exclusive: used for store prefetch
+    method Bool hasReqToExclusive(Addr addr);
+`endif
 endinterface
 
 interface L1CRqMshr#(
@@ -173,8 +178,9 @@ endinterface
 //////////////////
 // safe version //
 //////////////////
-module mkL1CRqMshrSafe#(
-    function Addr getAddrFromReq(reqT r)
+module mkL1CRqMshr#(
+    function Addr getAddrFromReq(reqT r),
+    function Bool isReqToExclusive(reqT r)
 )(
     L1CRqMshr#(cRqNum, wayT, tagT, reqT)
 ) provisos (
@@ -339,15 +345,29 @@ module mkL1CRqMshrSafe#(
             function Bool isEndOfChain(Integer i);
                 // check entry i is end of chain or not
                 L1CRqState state = stateVec[i][pipelineResp_port];
-                Bool notDone = state != Done;
                 Bool processedOnce = state != Empty && state != Init;
                 Bool addrMatch = getLineAddr(getAddrFromReq(reqVec[i][pipelineResp_port])) == getLineAddr(addr);
                 Bool noSucc = !succValidVec[i][pipelineResp_port];
-                return notDone && processedOnce && addrMatch && noSucc;
+                return processedOnce && addrMatch && noSucc;
             endfunction
             Vector#(cRqNum, Integer) idxVec = genVector;
             return searchIndex(isEndOfChain, idxVec);
         endmethod
+
+`ifdef STORE_PREFETCH
+        method Bool hasReqToExclusive(Addr addr);
+            function Bool isToExclusive(Integer i);
+                L1CRqState state = stateVec[i][pipelineResp_port];
+                reqT req = reqVec[i][pipelineResp_port];
+                Bool processedOnce = state != Empty && state != Init;
+                Bool addrMatch = getLineAddr(getAddrFromReq(req)) == getLineAddr(addr);
+                Bool toExclusive = isReqToExclusive(req);
+                return processedOnce && addrMatch && toExclusive;
+            endfunction
+            Vector#(cRqNum, Integer) idxVec = genVector;
+            return any(isToExclusive, idxVec);
+        endmethod
+`endif
     endinterface
 
     method Bool emptyForFlush;
@@ -363,16 +383,3 @@ module mkL1CRqMshrSafe#(
 `endif
 endmodule
 
-// exported version
-module mkL1CRqMshr#(
-    function Addr getAddrFromReq(reqT r)
-)(
-    L1CRqMshr#(cRqNum, wayT, tagT, reqT)
-) provisos (
-    Alias#(wayT, Bit#(_waySz)),
-    Alias#(tagT, Bit#(_tagSz)),
-    Bits#(reqT, _reqSz)
-);
-    let m <- mkL1CRqMshrSafe(getAddrFromReq);
-    return m;
-endmodule

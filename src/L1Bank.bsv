@@ -187,6 +187,10 @@ module mkL1Bank#(
     Count#(Data) ldMissLat <- mkCount(0);
     Count#(Data) stMissLat <- mkCount(0);
     Count#(Data) amoMissLat <- mkCount(0);
+`ifdef STORE_PREFETCH
+    Count#(Data) stPrefetchCnt <- mkCount(0);
+    Count#(Data) stPrefetchMissCnt <- mkCount(0);
+`endif
     
     LatencyTimer#(cRqNum, 10) latTimer <- mkLatencyTimer; // max 1K cycle latency
 
@@ -197,6 +201,9 @@ module mkL1Bank#(
                 Ld: ldCnt.incr(1);
                 St: stCnt.incr(1);
                 Lr, Sc, Amo: amoCnt.incr(1);
+`ifdef STORE_PREFETCH
+                StPrefetch: stPrefetchCnt.incr(1);
+`endif
             endcase
         end
     endaction
@@ -219,6 +226,11 @@ module mkL1Bank#(
                     amoMissLat.incr(zeroExtend(lat));
                     amoMissCnt.incr(1);
                 end
+`ifdef STORE_PREFETCH
+                StPrefetch: begin
+                    stPrefetchMissCnt.incr(1);
+                end
+`endif
             endcase
         end
     endaction
@@ -487,6 +499,15 @@ module mkL1Bank#(
                 // calculate new data to write
                 newLine = getUpdatedLine(curLine, be, wrLine);
             end
+`ifdef STORE_PREFETCH
+            StPrefetch: begin
+`ifdef DEBUG_STORE_PREFETCH
+                procResp.respStPrefetch(req.id);
+`else
+                noAction;
+`endif
+            end
+`endif // STORE_PREFETCH
             default: begin
                 doAssert(False, "unknown mem op");
             end
@@ -684,6 +705,31 @@ module mkL1Bank#(
         endaction
         endfunction
 
+        // consider dropping a prefetch
+`ifdef STORE_PREFETCH
+        Bool dropStPrefetch = procRq.op == StPrefetch &&
+                              cRqMshr.pipelineResp.hasReqToExclusive(procRq.addr);
+
+        function Action cRqDropStPrefetch;
+        action
+            // Drop prefetch because there is already some other req to
+            // complete the job of prefetch
+            doAssert(pipeOutCState == Init, "must just go through pipeline");
+            doAssert(!isValid(pipeOutSucc), "cannot have successor");
+            // deq pipe (cannot have successor because first time go through
+            // pipeline) and release MSHR
+            pipeline.deqWrite(Invalid, ram, False);
+            cRqMshr.pipelineResp.releaseEntry(n);
+`ifdef DEBUG_STORE_PREFETCH
+            procResp.respStPrefetch(procRq.id);
+`endif
+        endaction
+        endfunction
+`else // !STORE_PREFETCH
+        Bool dropStPrefetch = False;
+        function Action cRqDropStPrefetch = noAction;
+`endif // STORE_PREFETCH
+
         // check if Sc fails early. If an Sc needs to req parent but it's addr
         // does not match link addr, we can directly respond the Sc with
         // failure, and thus avoid requesting parent.
@@ -701,13 +747,20 @@ module mkL1Bank#(
                 // tag match must be hit (because replacement algo won't give a way with owner)
                 doAssert(pipeOutCState == Init, "must first time go through tag match");
                 doAssert(cs_valid && tag_match, "cRq should hit in tag match");
-                // should be added to a cRq in dependency chain & deq from pipeline
-                doAssert(isValid(cRqEOC), ("cRq hit on another cRq, cRqEOC must be true"));
-                cRqMshr.pipelineResp.setSucc(fromMaybe(?, cRqEOC), Valid (n));
-                cRqSetDepNoCacheChange;
-                $display("%t L1 %m pipelineResp: cRq: own by other cRq ", $time,
-                    fshow(cOwner), ", depend on cRq ", fshow(cRqEOC)
-                );
+                if(dropStPrefetch) begin
+                    // prefetch st is dropped
+                    cRqDropStPrefetch;
+                    $display("%t L1 %m pipelineResp: cRq: own by other cRq, drop store prefetch", $time);
+                end
+                else begin
+                    // should be added to a cRq in dependency chain & deq from pipeline
+                    doAssert(isValid(cRqEOC), ("cRq hit on another cRq, cRqEOC must be true"));
+                    cRqMshr.pipelineResp.setSucc(fromMaybe(?, cRqEOC), Valid (n));
+                    cRqSetDepNoCacheChange;
+                    $display("%t L1 %m pipelineResp: cRq: own by other cRq ", $time,
+                        fshow(cOwner), ", depend on cRq ", fshow(cRqEOC)
+                    );
+                end
             end
             else begin
                 // owner is myself, so must be swapped in
@@ -746,11 +799,17 @@ module mkL1Bank#(
             // check for cRqEOC to append to dependency chain
             // Only append to dep-chain if is in Init state
             if(cRqEOC matches tagged Valid .k &&& cState == Init) begin
-                $display("%t L1 %m pipelineResp: cRq: no owner, depend on cRq, ", $time,
-                    fshow(cState), " ; ", fshow(cRqEOC)
-                );
-                cRqMshr.pipelineResp.setSucc(k, Valid (n));
-                cRqSetDepNoCacheChange;
+                if(dropStPrefetch) begin
+                    cRqDropStPrefetch;
+                    $display("%t L1 %m pipelineResp: cRq: no owner, drop store prefetch", $time);
+                end
+                else begin
+                    cRqMshr.pipelineResp.setSucc(k, Valid (n));
+                    cRqSetDepNoCacheChange;
+                    $display("%t L1 %m pipelineResp: cRq: no owner, depend on cRq, ",
+                        $time, fshow(cState), " ; ", fshow(cRqEOC)
+                    );
+                end
             end
             else begin
                 // Check hit or miss, replacment may be needed

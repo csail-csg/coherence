@@ -205,6 +205,9 @@ interface L1ProcResp#(type idT);
     method Action respLrScAmo(idT id, Data resp);
     method ActionValue#(Tuple2#(LineByteEn, Line)) respSt(idT id);
     method Action evict(LineAddr a); // called when cache line is evicted
+`ifdef DEBUG_STORE_PREFETCH
+    method Action respStPrefetch(idT id);
+`endif
 endinterface
 
 // RISCV-specific store-cond return values

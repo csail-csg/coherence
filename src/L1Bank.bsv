@@ -1081,6 +1081,10 @@ module mkL1Bank#(
             L1DLdMissLat: ldMissLat;
             L1DStMissLat: stMissLat;
             L1DAmoMissLat: amoMissLat;
+`ifdef STORE_PREFETCH
+            L1DStPrefetchCnt: stPrefetchCnt;
+            L1DStPrefetchMissCnt: stPrefetchMissCnt;
+`endif
 `endif
             default: 0;
         endcase);

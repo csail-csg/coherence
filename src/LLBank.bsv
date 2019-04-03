@@ -210,6 +210,8 @@ module mkLLBank#(
     Count#(Data) dmaMemLdLat <- mkCount(0);
     Count#(Data) normalMemLdCnt <- mkCount(0);
     Count#(Data) normalMemLdLat <- mkCount(0);
+    Count#(Data) dmaMemStCnt <- mkCount(0);
+    Count#(Data) normalMemStCnt <- mkCount(0);
     Count#(Data) mshrBlocks <- mkCount(0);
     Count#(Data) downRespCnt <- mkCount(0);
     Count#(Data) downRespDataCnt <- mkCount(0);
@@ -574,6 +576,11 @@ module mkLLBank#(
             doAssert(isRqFromDma(cRq.id), "must be dma write");
             doAssert(isValid(data), "dma write must have data");
             doAssert(!doLdAfterReplace, "doLdAfterReplace should be false");
+`ifdef PERF_COUNT
+            if(doStats) begin
+                dmaMemStCnt.incr(1);
+            end
+`endif
 `ifdef DEBUG_DMA
             dmaWrMissQ.enq(getIdFromDma(cRq.id)); // DMA write takes effect
 `endif
@@ -609,6 +616,11 @@ module mkLLBank#(
                 // don't deq info, do ld next time
                 doLdAfterReplace <= True;
                 $display("%t LL %m sendToM: rep then ld: rep: ", $time, fshow(msg));
+`ifdef PERF_COUNT
+                if(doStats) begin
+                    normalMemStCnt.incr(1);
+                end
+`endif
             end
             doAssert(isRqFromC(cRq.id), "must be child req");
             doAssert(isValid(data), "replace must have data");
@@ -1467,6 +1479,8 @@ module mkLLBank#(
             LLCDmaMemLdLat: dmaMemLdLat;
             LLCNormalMemLdCnt: normalMemLdCnt;
             LLCNormalMemLdLat: normalMemLdLat;
+            LLCDmaMemStCnt: dmaMemStCnt;
+            LLCNormalMemStCnt: normalMemStCnt;
             LLCMshrBlockCycles: mshrBlocks;
             LLCDownRespCnt: downRespCnt;
             LLCDownRespDataCnt: downRespDataCnt;

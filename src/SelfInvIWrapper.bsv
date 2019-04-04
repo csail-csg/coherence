@@ -29,6 +29,8 @@ import CCSizes::*;
 import SelfInvIPipe::*;
 import ICRqMshr::*;
 import SelfInvIBank::*;
+import RWBramCore::*;
+import LruReplace::*;
 
 (* synthesize *)
 module mkSelfInvICRqMshrWrapper(
@@ -41,15 +43,19 @@ module mkSelfInvICRqMshrWrapper(
     return m;
 endmodule
 
+typedef TrueLruRepInfo#(L1WayNum) IRepInfo;
+
 (* synthesize *)
 module mkSelfInvIPipeline(
-    SelfInvIPipe#(LgIBankNum, L1WayNum, IIndex, ITag, L1CRqMshrIdx)
+    SelfInvIPipe#(LgIBankNum, L1WayNum, IIndex, ITag, IRepInfo, L1CRqMshrIdx)
 );
-    let m <- mkSelfInvIPipe;
+    RWBramCore#(L1Index, IRepInfo) repRam <- mkRWBramCore;
+    ReplacePolicy#(L1WayNum, IRepInfo) repPolicy <- mkTrueLruReplace;
+    let m <- mkSelfInvIPipe(repRam, repPolicy);
     return m;
 endmodule
 
-typedef SelfInvIBank#(L1ISupSz, LgIBankNum, L1WayNum, IIndexSz, ITagSz, L1CRqNum) SelfInvIBankWrapper;
+typedef SelfInvIBank#(L1ISupSz, LgIBankNum, L1WayNum, IIndexSz, ITagSz, L1CRqNum, IRepInfo) SelfInvIBankWrapper;
 
 (* synthesize *)
 module mkSelfInvIBankWrapper(SelfInvIBankWrapper);

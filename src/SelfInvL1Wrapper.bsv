@@ -29,6 +29,8 @@ import SelfInvL1Pipe::*;
 import L1CRqMshr::*;
 import L1PRqMshr::*;
 import SelfInvL1Bank::*;
+import RWBramCore::*;
+import LruReplace::*;
 
 (* synthesize *)
 module mkSelfInvL1CRqMshrWrapper(
@@ -37,7 +39,10 @@ module mkSelfInvL1CRqMshrWrapper(
     function Addr getAddrFromReq(ProcRq#(ProcRqId) r);
         return r.addr;
     endfunction
-    let m <- mkL1CRqMshr(getAddrFromReq);
+    function Bool isReqToExclusive(ProcRq#(ProcRqId) r);
+        return r.toState >= E;
+    endfunction
+    let m <- mkL1CRqMshr(getAddrFromReq, isReqToExclusive);
     return m;
 endmodule
 
@@ -49,15 +54,19 @@ module mkSelfInvL1PRqMshrWrapper(
     return m;
 endmodule
 
+typedef TrueLruRepInfo#(L1WayNum) L1RepInfo;
+
 (* synthesize *)
 module mkSelfInvL1Pipeline(
-    SelfInvL1Pipe#(LgL1BankNum, L1WayNum, L1DMaxHitNum, L1Index, L1Tag, L1CRqMshrIdx, L1PRqMshrIdx)
+    SelfInvL1Pipe#(LgL1BankNum, L1WayNum, L1DMaxHitNum, L1Index, L1Tag, L1RepInfo, L1CRqMshrIdx, L1PRqMshrIdx)
 );
-    let m <- mkSelfInvL1Pipe;
+    RWBramCore#(L1Index, L1RepInfo) repRam <- mkRWBramCore;
+    ReplacePolicy#(L1WayNum, L1RepInfo) repPolicy <- mkTrueLruReplace;
+    let m <- mkSelfInvL1Pipe(repRam, repPolicy);
     return m;
 endmodule
 
-typedef SelfInvL1Bank#(LgL1BankNum, L1WayNum, L1IndexSz, L1TagSz, L1CRqNum, L1PRqNum, L1DMaxHitNum, ProcRqId) SelfInvL1CacheWrapper;
+typedef SelfInvL1Bank#(LgL1BankNum, L1WayNum, L1IndexSz, L1TagSz, L1CRqNum, L1PRqNum, L1DMaxHitNum, L1RepInfo, ProcRqId) SelfInvL1CacheWrapper;
 
 module mkSelfInvL1CacheWrapper#(L1ProcResp#(ProcRqId) procResp)(SelfInvL1CacheWrapper);
     let m <- mkSelfInvL1Cache(mkSelfInvL1CRqMshrWrapper, mkSelfInvL1PRqMshrWrapper, mkSelfInvL1Pipeline, procResp);

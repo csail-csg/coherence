@@ -30,7 +30,6 @@ import Fifo::*;
 import CCTypes::*;
 import CCPipe::*;
 import RWBramCore::*;
-import RandomReplace::*;
 
 export SelfInvIPipeRqIn(..);
 export SelfInvIPipePRsIn(..);
@@ -39,7 +38,7 @@ export SelfInvICmd(..);
 export SelfInvIPipe(..);
 export mkSelfInvIPipe;
 
-// type param ordering: bank < way < index < tag < cRq
+// type param ordering: bank < way < index < tag < repT < cRq
 
 // In I cache, only cRq can occupy cache line, there is no pRq or explicity
 // replacement, so cache owner type is simply Maybe#(cRqIdxT)
@@ -78,13 +77,14 @@ interface SelfInvIPipe#(
     numeric type wayNum,
     type indexT,
     type tagT,
+    type repT,
     type cRqIdxT
 );
     method Action send(SelfInvIPipeIn#(Bit#(TLog#(wayNum)), cRqIdxT) r);
     method PipeOut#(
         Bit#(TLog#(wayNum)),
         tagT, Msi, void, // no dir
-        Maybe#(cRqIdxT), void, RandRepInfo, // no other
+        Maybe#(cRqIdxT), void, repT, // no other
         Line, SelfInvICmd#(cRqIdxT)
     ) first;
     method Action deqWrite(
@@ -213,14 +213,16 @@ module mkCacheInfoArray(CacheInfoArray#(indexT, tagT, ownerT, otherT)) provisos(
     method reconcile = csArray.reconcile;
 endmodule
 
-module mkSelfInvIPipe(
-    SelfInvIPipe#(lgBankNum, wayNum, indexT, tagT, cRqIdxT)
+module mkSelfInvIPipe#(
+    RWBramCore#(indexT, repT) repRam,
+    ReplacePolicy#(wayNum, repT) repPolicy
+)(
+    SelfInvIPipe#(lgBankNum, wayNum, indexT, tagT, repT, cRqIdxT)
 ) provisos(
     Alias#(wayT, Bit#(TLog#(wayNum))),
     Alias#(dirT, void), // no directory
     Alias#(ownerT, Maybe#(cRqIdxT)),
     Alias#(otherT, void),
-    Alias#(repT, RandRepInfo),
     Alias#(pipeInT, SelfInvIPipeIn#(wayT, cRqIdxT)),
     Alias#(pipeCmdT, SelfInvIPipeCmd#(wayT, cRqIdxT)),
     Alias#(iCmdT, SelfInvICmd#(cRqIdxT)),
@@ -235,14 +237,13 @@ module mkSelfInvIPipe(
     Alias#(tagT, Bit#(tagSz)),
     Alias#(cRqIdxT, Bit#(cRqIdxSz)),
     Add#(indexSz, a__, AddrSz),
-    Add#(tagSz, b__, AddrSz)
+    Add#(tagSz, b__, AddrSz),
+    Bits#(repT, _repSz)
 );
     // info RAM
     Vector#(wayNum, CacheInfoArray#(indexT, tagT, ownerT, otherT)) infoArray <- replicateM(mkCacheInfoArray);
     function RWBramCore#(indexT, infoT) getInfoRam(Integer i) = infoArray[i].ram;
     Vector#(wayNum, RWBramCore#(indexT, infoT)) infoRam = map(getInfoRam, genVector);
-    // rep RAM (dummy)
-    RWBramCore#(indexT, repT) repRam <- mkRandRepRam;
     // data RAM
     RWBramCore#(dataIndexT, Line) dataRam <- mkRWBramCore;
 
@@ -260,15 +261,12 @@ module mkSelfInvIPipe(
                 other: ?
             });
         end
-        repRam.wrReq(initIndex, randRepInitInfo); // useless for random replace
+        repRam.wrReq(initIndex, repPolicy.initRepInfo);
         initIndex <= initIndex + 1;
         if(initIndex == maxBound) begin
             initDone <= True;
         end
     endrule
-
-    // random replacement
-    RandomReplace#(wayNum) randRep <- mkRandomReplace;
 
     // functions
     function Addr getAddrFromCmd(pipeCmdT cmd);
@@ -333,7 +331,7 @@ module mkSelfInvIPipe(
                         invalid[i] = csVec[i] == I;
                         unlocked[i] = !isValid(ownerVec[i]);
                     end
-                    Maybe#(wayT) repWay = randRep.getReplaceWay(unlocked, invalid);
+                    Maybe#(wayT) repWay = repPolicy.getReplaceWay(unlocked, invalid, repInfo);
                     // sanity check: repWay must be valid
                     if(!isValid(repWay)) begin
                         $fwrite(stderr, "[L1Pipe] ERROR: ", fshow(cmd), " cannot find way to replace\n");
@@ -369,7 +367,7 @@ module mkSelfInvIPipe(
 
     function ActionValue#(repT) updateRepInfo(repT r, wayT w);
     actionvalue
-        return ?; // random replace does not have bookkeeping
+        return repPolicy.updateRepInfo(r, w);
     endactionvalue
     endfunction
 

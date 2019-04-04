@@ -27,7 +27,6 @@ import Types::*;
 import CCTypes::*;
 import CCPipe::*;
 import RWBramCore::*;
-import RandomReplace::*;
 
 export L1PipeRqIn(..);
 export L1PipePRsIn(..);

@@ -46,7 +46,6 @@ import CacheUtils::*;
 import CrossBar::*;
 import Performance::*;
 import LatencyTimer::*;
-import RandomReplace::*;
 
 export SelfInvL1CRqStuck(..);
 export SelfInvL1PRqStuck(..);
@@ -98,6 +97,7 @@ interface SelfInvL1Bank#(
     numeric type cRqNum,
     numeric type pRqNum,
     numeric type maxHitNum,
+    type repInfoT,
     type procRqIdT // id of req from processor core
 );
     interface ChildCacheToParent#(Bit#(TLog#(wayNum)), void) to_parent;
@@ -128,10 +128,10 @@ module mkSelfInvL1Bank#(
     Bit#(lgBankNum) bankId,
     module#(L1CRqMshr#(cRqNum, wayT, tagT, procRqT)) mkL1CRqMshrLocal,
     module#(L1PRqMshr#(pRqNum)) mkL1PRqMshrLocal,
-    module#(SelfInvL1Pipe#(lgBankNum, wayNum, maxHitNum, indexT, tagT, cRqIdxT, pRqIdxT)) mkL1Pipeline,
+    module#(SelfInvL1Pipe#(lgBankNum, wayNum, maxHitNum, indexT, tagT, repInfoT, cRqIdxT, pRqIdxT)) mkL1Pipeline,
     L1ProcResp#(procRqIdT) procResp
 )(
-   SelfInvL1Bank#(lgBankNum, wayNum, indexSz, tagSz, cRqNum, pRqNum, maxHitNum, procRqIdT)
+   SelfInvL1Bank#(lgBankNum, wayNum, indexSz, tagSz, cRqNum, pRqNum, maxHitNum, repInfoT, procRqIdT)
 ) provisos(
     Alias#(wayT, Bit#(TLog#(wayNum))),
     Alias#(indexT, Bit#(indexSz)),
@@ -150,7 +150,7 @@ module mkSelfInvL1Bank#(
     Alias#(pRqRsFromPT, PRqRsMsg#(wayT, void)),
     Alias#(cRqSlotT, L1CRqSlot#(wayT, tagT)), // cRq MSHR slot
     Alias#(l1CmdT, SelfInvL1Cmd#(cRqIdxT, pRqIdxT)),
-    Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, void, cacheOwnerT, otherT, RandRepInfo, Line, l1CmdT)),
+    Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, void, cacheOwnerT, otherT, repInfoT, Line, l1CmdT)),
     // requirements
     Bits#(procRqIdT, _procRqIdT),
     FShow#(procRqIdT),
@@ -165,7 +165,7 @@ module mkSelfInvL1Bank#(
 
     L1PRqMshr#(pRqNum) pRqMshr <- mkL1PRqMshrLocal;
 
-    SelfInvL1Pipe#(lgBankNum, wayNum, maxHitNum, indexT, tagT, cRqIdxT, pRqIdxT) pipeline <- mkL1Pipeline;
+    SelfInvL1Pipe#(lgBankNum, wayNum, maxHitNum, indexT, tagT, repInfoT, cRqIdxT, pRqIdxT) pipeline <- mkL1Pipeline;
 
     Fifo#(1, procRqT) rqFromCQ <- mkBypassFifo;
 
@@ -1070,14 +1070,14 @@ endmodule
 module mkSelfInvL1Cache#(
     module#(L1CRqMshr#(cRqNum, wayT, tagT, procRqT)) mkL1CRqMshrLocal,
     module#(L1PRqMshr#(pRqNum)) mkL1PRqMshrLocal,
-    module#(SelfInvL1Pipe#(lgBankNum, wayNum, maxHitNum, indexT, tagT, cRqIdxT, pRqIdxT)) mkL1Pipeline,
+    module#(SelfInvL1Pipe#(lgBankNum, wayNum, maxHitNum, indexT, tagT, repInfoT, cRqIdxT, pRqIdxT)) mkL1Pipeline,
     L1ProcResp#(procRqIdT) procResp
 )(
-    SelfInvL1Bank#(lgBankNum, wayNum, indexSz, tagSz, cRqNum, pRqNum, maxHitNum, procRqIdT)
+    SelfInvL1Bank#(lgBankNum, wayNum, indexSz, tagSz, cRqNum, pRqNum, maxHitNum, repInfoT, procRqIdT)
 ) provisos (
     NumAlias#(bankNum, TExp#(lgBankNum)),
     Alias#(bankIdT, Bit#(lgBankNum)),
-    Alias#(l1BankT, SelfInvL1Bank#(lgBankNum, wayNum, indexSz, tagSz, cRqNum, pRqNum, maxHitNum, procRqIdT)),
+    Alias#(l1BankT, SelfInvL1Bank#(lgBankNum, wayNum, indexSz, tagSz, cRqNum, pRqNum, maxHitNum, repInfoT, procRqIdT)),
     Alias#(wayT, Bit#(TLog#(wayNum))),
     Alias#(indexT, Bit#(indexSz)),
     Alias#(tagT, Bit#(tagSz)),
@@ -1090,7 +1090,7 @@ module mkSelfInvL1Cache#(
     Alias#(cRsToPT, CRsMsg#(void)),
     Alias#(pRqRsFromPT, PRqRsMsg#(wayT, void)),
     Alias#(l1CmdT, SelfInvL1Cmd#(cRqIdxT, pRqIdxT)),
-    Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, void, cacheOwnerT, otherT, RandRepInfo, Line, l1CmdT)),
+    Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, void, cacheOwnerT, otherT, repInfoT, Line, l1CmdT)),
     // requirements
     Bits#(procRqIdT, _procRqIdT),
     FShow#(procRqIdT),

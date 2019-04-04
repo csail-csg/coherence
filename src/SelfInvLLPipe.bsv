@@ -146,9 +146,12 @@ module mkSelfInvLLPipe(
 );
     // RAMs
     Vector#(wayNum, RWBramCore#(indexT, infoT)) infoRam <- replicateM(mkRWBramCore);
-    RWBramCore#(indexT, repT) repRam <- mkRandRepRam;
     RWBramCore#(dataIndexT, Line) dataRam <- mkRWBramCore;
     
+    // random replacement
+    RWBramCore#(indexT, repT) repRam <- mkRandRepRam;
+    ReplacePolicy#(wayNum, repT) repPolicy <- mkRandomReplace;
+
     // initialize RAM
     Reg#(Bool) initDone <- mkReg(False);
     Reg#(indexT) initIndex <- mkReg(0);
@@ -163,15 +166,12 @@ module mkSelfInvLLPipe(
                 other: ?
             });
         end
-        repRam.wrReq(initIndex, randRepInitInfo); // useless for random replace
+        repRam.wrReq(initIndex, repPolicy.initRepInfo);
         initIndex <= initIndex + 1;
         if(initIndex == maxBound) begin
             initDone <= True;
         end
     endrule
-
-    // random replacement
-    RandomReplace#(wayNum) randRep <- mkRandomReplace;
 
     // functions
     function Addr getAddrFromCmd(pipeCmdT cmd);
@@ -241,7 +241,7 @@ module mkSelfInvLLPipe(
                         invalid[i] = csVec[i] == I;
                         unlocked[i] = !isValid(ownerVec[i]);
                     end
-                    Maybe#(wayT) repWay = randRep.getReplaceWay(unlocked, invalid);
+                    Maybe#(wayT) repWay = repPolicy.getReplaceWay(unlocked, invalid, repInfo);
                     // sanity check: repWay must be valid
                     doAssert(isValid(repWay), "should always find a way to replace");
                     return TagMatchResult {
@@ -296,7 +296,7 @@ module mkSelfInvLLPipe(
 
     function ActionValue#(repT) updateRepInfo(repT r, wayT w);
     actionvalue
-        return ?; // random replace does not have bookkeeping
+        return repPolicy.updateRepInfo(r, w);
     endactionvalue
     endfunction
 

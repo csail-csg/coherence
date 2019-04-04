@@ -22,46 +22,33 @@
 // SOFTWARE.
 
 import Vector::*;
-import Fifo::*;
 import CCTypes::*;
 import RWBramCore::*;
 
-// random replace does not need any bookkeeping
-typedef void RandRepInfo;
+// True LRU
 
-module mkRandRepRam(RWBramCore#(indexT, RandRepInfo));
-    Fifo#(1, void) rdReqQ <- mkPipelineFifo;
+// vec[0] -- MRU, vec[wayNum-1] -- LRU
+typedef Vector#(wayNum, Bit#(TLog#(wayNum))) TrueLruRepInfo#(numeric type wayNum);
 
-    method Action wrReq(indexT a, RandRepInfo d);
-        noAction;
-    endmethod
-    method Action rdReq(indexT a);
-        rdReqQ.enq(?);
-    endmethod
-    method RandRepInfo rdResp if(rdReqQ.notEmpty);
-        return ?;
-    endmethod
-    method rdRespValid = rdReqQ.notEmpty;
-    method deqRdResp = rdReqQ.deq;
-endmodule
-
-module mkRandomReplace(ReplacePolicy#(wayNum, RandRepInfo)) provisos(
-    Alias#(wayT, Bit#(TLog#(wayNum)))
+module mkTrueLruReplace(ReplacePolicy#(wayNum, TrueLruRepInfo#(wayNum))) provisos(
+    Add#(1, a__, wayNum),
+    Alias#(wayT, Bit#(TLog#(wayNum))),
+    Alias#(repT, TrueLruRepInfo#(wayNum))
 );
+    // rand rep as fall back if LRU way is locked
     Reg#(wayT) randWay <- mkReg(0);
-
     rule tick;
         randWay <= randWay == fromInteger(valueOf(wayNum) - 1) ? 0 : randWay + 1;
     endrule
 
-    method RandRepInfo initRepInfo;
-        return ?;
+    method repT initRepInfo;
+        return genWith(fromInteger);
     endmethod
-    
+
     method Maybe#(wayT) getReplaceWay(
         Vector#(wayNum, Bool) unlocked,
         Vector#(wayNum, Bool) invalid,
-        RandRepInfo unused
+        repT repInfo
     );
         // first search for invalid & unlocked way
         function Bool isInvUnlock(Integer i);
@@ -70,20 +57,36 @@ module mkRandomReplace(ReplacePolicy#(wayNum, RandRepInfo)) provisos(
         Vector#(wayNum, Integer) idxVec = genVector;
         Maybe#(wayT) repWay = searchIndex(isInvUnlock, idxVec);
         if(!isValid(repWay)) begin
-            // check whether random way is unlocked
-            if(unlocked[randWay]) begin
-                repWay = Valid (randWay);
+            // check whether LRU way is unlocked
+            wayT lruWay = repInfo[valueof(wayNum) - 1];
+            if(unlocked[lruWay]) begin
+                repWay = Valid (lruWay);
             end
             else begin
-                // just find a unlocked way
-                repWay = searchIndex(id, unlocked);
+                // check if a random way is unlocked
+                if(unlocked[randWay]) begin
+                    repWay = Valid (randWay);
+                end
+                else begin
+                    // just find a unlocked way
+                    repWay = searchIndex(id, unlocked);
+                end
             end
         end
         return repWay;
     endmethod
 
-    method repInfoT updateRepInfo(repInfoT old, wayT way);
-        return ?;
+    method repT updateRepInfo(repT repInfo, wayT hitWay);
+        repT newInfo = repInfo;
+        // find which vector index contains hitWay, and shift rep info
+        if(findElem(hitWay, repInfo) matches tagged Valid .idx) begin
+            newInfo[0] = hitWay;
+            for(Integer i = 0; i < valueof(wayNum) - 1; i = i+1) begin
+                if(fromInteger(i) < idx) begin
+                    newInfo[i + 1] = repInfo[i];
+                end
+            end
+        end
+        return newInfo;
     endmethod
 endmodule
-

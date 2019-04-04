@@ -30,6 +30,8 @@ import L1Pipe::*;
 import ICRqMshr::*;
 import IPRqMshr::*;
 import IBank::*;
+import RWBramCore::*;
+import LruReplace::*;
 
 (* synthesize *)
 module mkICRqMshrWrapper(
@@ -50,15 +52,19 @@ module mkIPRqMshrWrapper(
     return m;
 endmodule
 
+typedef TrueLruRepInfo#(L1WayNum) IRepInfo;
+
 (* synthesize *)
 module mkIPipeline(
-    L1Pipe#(LgIBankNum, L1WayNum, IIndex, ITag, L1CRqMshrIdx, L1PRqMshrIdx)
+    L1Pipe#(LgIBankNum, L1WayNum, IIndex, ITag, IRepInfo, L1CRqMshrIdx, L1PRqMshrIdx)
 );
-    let m <- mkL1Pipe;
+    RWBramCore#(L1Index, IRepInfo) repRam <- mkRWBramCore;
+    ReplacePolicy#(L1WayNum, IRepInfo) repPolicy <- mkTrueLruReplace;
+    let m <- mkL1Pipe(repRam, repPolicy);
     return m;
 endmodule
 
-typedef IBank#(L1ISupSz, LgIBankNum, L1WayNum, IIndexSz, ITagSz, L1CRqNum, L1PRqNum) IBankWrapper;
+typedef IBank#(L1ISupSz, LgIBankNum, L1WayNum, IIndexSz, ITagSz, L1CRqNum, L1PRqNum, IRepInfo) IBankWrapper;
 
 (* synthesize *)
 module mkIBankWrapper(IBankWrapper);

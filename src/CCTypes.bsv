@@ -436,6 +436,17 @@ function Bool getSelfInvNeedReqChild(SelfInvDirPend#(childT) dirPend);
     return dirPend matches tagged ToSend .c ? True : False;
 endfunction
 
+// General replacement interface
+interface ReplacePolicy#(numeric type wayNum, type repInfoT);
+    method repInfoT initRepInfo;
+    method Maybe#(Bit#(TLog#(wayNum))) getReplaceWay(
+        Vector#(wayNum, Bool) unlocked, 
+        Vector#(wayNum, Bool) invalid,
+        repInfoT repInfo
+    );
+    method repInfoT updateRepInfo(repInfoT old, Bit#(TLog#(wayNum)) way);
+endinterface
+
 // useful functions
 function Action check(Bool v);
 action

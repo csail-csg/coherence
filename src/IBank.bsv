@@ -44,7 +44,6 @@ import Fifo::*;
 import CacheUtils::*;
 import Performance::*;
 import LatencyTimer::*;
-import RandomReplace::*;
 
 export ICRqStuck(..);
 export IPRqStuck(..);
@@ -72,7 +71,8 @@ interface IBank#(
     numeric type indexSz,
     numeric type tagSz,
     numeric type cRqNum,
-    numeric type pRqNum
+    numeric type pRqNum,
+    type repInfoT
 );
     interface ChildCacheToParent#(Bit#(TLog#(wayNum)), void) to_parent;
     interface InstServer#(supSz) to_proc; // to child, i.e. processor
@@ -91,9 +91,9 @@ module mkIBank#(
     Bit#(lgBankNum) bankId,
     module#(ICRqMshr#(cRqNum, wayT, tagT, procRqT, resultT)) mkICRqMshrLocal,
     module#(IPRqMshr#(pRqNum)) mkIPRqMshrLocal,
-    module#(L1Pipe#(lgBankNum, wayNum, indexT, tagT, cRqIdxT, pRqIdxT)) mkL1Pipeline
+    module#(L1Pipe#(lgBankNum, wayNum, indexT, tagT, repInfoT, cRqIdxT, pRqIdxT)) mkL1Pipeline
 )(
-    IBank#(supSz, lgBankNum, wayNum, indexSz, tagSz, cRqNum, pRqNum)
+    IBank#(supSz, lgBankNum, wayNum, indexSz, tagSz, cRqNum, pRqNum, repInfoT)
 ) provisos(
     Alias#(wayT, Bit#(TLog#(wayNum))),
     Alias#(indexT, Bit#(indexSz)),
@@ -111,7 +111,7 @@ module mkIBank#(
     Alias#(pRqRsFromPT, PRqRsMsg#(wayT, void)),
     Alias#(cRqSlotT, ICRqSlot#(wayT, tagT)), // cRq MSHR slot
     Alias#(l1CmdT, L1Cmd#(indexT, cRqIdxT, pRqIdxT)),
-    Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, void, cacheOwnerT, void, RandRepInfo, Line, l1CmdT)),
+    Alias#(pipeOutT, PipeOut#(wayT, tagT, Msi, void, cacheOwnerT, void, repInfoT, Line, l1CmdT)),
     Alias#(resultT, Vector#(supSz, Maybe#(Instruction))),
     // requirements
     FShow#(pipeOutT),
@@ -125,7 +125,7 @@ module mkIBank#(
 
     IPRqMshr#(pRqNum) pRqMshr <- mkIPRqMshrLocal;
 
-    L1Pipe#(lgBankNum, wayNum, indexT, tagT, cRqIdxT, pRqIdxT) pipeline <- mkL1Pipeline;
+    L1Pipe#(lgBankNum, wayNum, indexT, tagT, repInfoT, cRqIdxT, pRqIdxT) pipeline <- mkL1Pipeline;
 
     Fifo#(1, Addr) rqFromCQ <- mkBypassFifo;
 

@@ -29,6 +29,8 @@ import L1Pipe::*;
 import L1CRqMshr::*;
 import L1PRqMshr::*;
 import L1Bank::*;
+import RWBramCore::*;
+import LruReplace::*;
 
 (* synthesize *)
 module mkL1CRqMshrWrapper(
@@ -52,15 +54,19 @@ module mkL1PRqMshrWrapper(
     return m;
 endmodule
 
+typedef TrueLruRepInfo#(L1WayNum) L1RepInfo;
+
 (* synthesize *)
 module mkL1Pipeline(
-    L1Pipe#(LgL1BankNum, L1WayNum, L1Index, L1Tag, L1CRqMshrIdx, L1PRqMshrIdx)
+    L1Pipe#(LgL1BankNum, L1WayNum, L1Index, L1Tag, L1RepInfo, L1CRqMshrIdx, L1PRqMshrIdx)
 );
-    let m <- mkL1Pipe;
+    RWBramCore#(L1Index, L1RepInfo) repRam <- mkRWBramCore;
+    ReplacePolicy#(L1WayNum, L1RepInfo) repPolicy <- mkTrueLruReplace;
+    let m <- mkL1Pipe(repRam, repPolicy);
     return m;
 endmodule
 
-typedef L1Bank#(LgL1BankNum, L1WayNum, L1IndexSz, L1TagSz, L1CRqNum, L1PRqNum, ProcRqId) L1CacheWrapper;
+typedef L1Bank#(LgL1BankNum, L1WayNum, L1IndexSz, L1TagSz, L1CRqNum, L1PRqNum, L1RepInfo, ProcRqId) L1CacheWrapper;
 
 module mkL1CacheWrapper#(L1ProcResp#(ProcRqId) procResp)(L1CacheWrapper);
     let m <- mkL1Cache(mkL1CRqMshrWrapper, mkL1PRqMshrWrapper, mkL1Pipeline, procResp);

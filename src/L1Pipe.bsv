@@ -38,7 +38,7 @@ export L1Cmd(..);
 export L1Pipe(..);
 export mkL1Pipe;
 
-// type param ordering: bank < way < index < tag < cRq < pRq
+// type param ordering: bank < way < index < tag < rep < cRq < pRq
 
 // in L1 cache, only cRq can occupy cache line (pRq handled immediately)
 // replacement is always done immediately (never have replacing line)
@@ -105,6 +105,7 @@ interface L1Pipe#(
     numeric type wayNum,
     type indexT,
     type tagT,
+    type repT,
     type cRqIdxT, 
     type pRqIdxT
 );
@@ -112,7 +113,7 @@ interface L1Pipe#(
     method PipeOut#(
         Bit#(TLog#(wayNum)), 
         tagT, Msi, void, // no dir
-        Maybe#(cRqIdxT), void, RandRepInfo, // no other
+        Maybe#(cRqIdxT), void, repT, // no other
         Line, L1Cmd#(indexT, cRqIdxT, pRqIdxT)
     ) first;
     method Action deqWrite(
@@ -142,14 +143,16 @@ typedef union tagged {
     type pRqIdxT
 ) deriving (Bits, Eq, FShow);
 
-module mkL1Pipe(
-    L1Pipe#(lgBankNum, wayNum, indexT, tagT, cRqIdxT, pRqIdxT)
+module mkL1Pipe#(
+    RWBramCore#(indexT, repT) repRam,
+    ReplacePolicy#(wayNum, repT) repPolicy
+)(
+    L1Pipe#(lgBankNum, wayNum, indexT, tagT, repT, cRqIdxT, pRqIdxT)
 ) provisos(
     Alias#(wayT, Bit#(TLog#(wayNum))),
     Alias#(dirT, void), // no directory
     Alias#(ownerT, Maybe#(cRqIdxT)),
     Alias#(otherT, void), // no other cache info
-    Alias#(repT, RandRepInfo), // use random replace
     Alias#(pipeInT, L1PipeIn#(wayT, indexT, cRqIdxT, pRqIdxT)),
     Alias#(pipeCmdT, L1PipeCmd#(wayT, indexT, cRqIdxT, pRqIdxT)),
     Alias#(l1CmdT, L1Cmd#(indexT, cRqIdxT, pRqIdxT)),
@@ -167,11 +170,11 @@ module mkL1Pipe(
     Alias#(cRqIdxT, Bit#(cRqIdxSz)),
     Alias#(pRqIdxT, Bit#(pRqIdxSz)),
     Add#(indexSz, a__, AddrSz),
-    Add#(tagSz, b__, AddrSz)
+    Add#(tagSz, b__, AddrSz),
+    Bits#(repT, repSz)
 );
     // RAMs
     Vector#(wayNum, RWBramCore#(indexT, infoT)) infoRam <- replicateM(mkRWBramCore);
-    RWBramCore#(indexT, repT) repRam <- mkRandRepRam;
     RWBramCore#(dataIndexT, Line) dataRam <- mkRWBramCore;
     
     // initialize RAM
@@ -188,15 +191,12 @@ module mkL1Pipe(
                 other: ?
             });
         end
-        repRam.wrReq(initIndex, randRepInitInfo); // useless for random replace
+        repRam.wrReq(initIndex, repPolicy.initRepInfo);
         initIndex <= initIndex + 1;
         if(initIndex == maxBound) begin
             initDone <= True;
         end
     endrule
-
-    // random replacement
-    RandomReplace#(wayNum) randRep <- mkRandomReplace;
 
     // functions
     function Addr getAddrFromCmd(pipeCmdT cmd);
@@ -281,7 +281,7 @@ module mkL1Pipe(
                         invalid[i] = csVec[i] == I;
                         unlocked[i] = !isValid(ownerVec[i]);
                     end
-                    Maybe#(wayT) repWay = randRep.getReplaceWay(unlocked, invalid);
+                    Maybe#(wayT) repWay = repPolicy.getReplaceWay(unlocked, invalid, repInfo);
                     // sanity check: repWay must be valid
                     if(!isValid(repWay)) begin
                         $fwrite(stderr, "[L1Pipe] ERROR: ", fshow(cmd), " cannot find way to replace\n");
@@ -317,7 +317,7 @@ module mkL1Pipe(
 
     function ActionValue#(repT) updateRepInfo(repT r, wayT w);
     actionvalue
-        return ?; // random replace does not have bookkeeping
+        return repPolicy.updateRepInfo(r, w);
     endactionvalue
     endfunction
 

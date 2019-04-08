@@ -521,15 +521,8 @@ module mkSelfInvIBank#(
                 
     interface pRqStuck = nullGet;
 
-`ifdef SECURITY
-    method Action flush if(flushDone);
-        flushDone <= False;
-    endmethod
-    method flush_done = flushDone._read;
-`else
     method flush = noAction;
     method flush_done = True;
-`endif
 
     method Action reconcile if(!needReconcile);
         needReconcile <= True;
